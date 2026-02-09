@@ -94,6 +94,512 @@ class SpatialHash:
         return result
 
 
+class SVGPathParser:
+    """Parse SVG files and extract shape polygons (pure Python, no dependencies)."""
+
+    logger = logging.getLogger(__name__)
+
+    @classmethod
+    def parse_file(cls, filepath: str, num_samples: int = 200) -> List[List[Tuple[float, float]]]:
+        """Load SVG file and return list of polygons (each a list of (x,y) tuples)."""
+        tree = ET.parse(filepath)
+        root = tree.getroot()
+
+        # Handle SVG namespace
+        ns = ''
+        tag = root.tag
+        if tag.startswith('{'):
+            ns = tag[:tag.index('}') + 1]
+
+        polygons = []
+
+        for elem in root.iter():
+            local = elem.tag.replace(ns, '') if ns else elem.tag
+            pts = None
+
+            if local == 'path':
+                d = elem.get('d', '')
+                if d:
+                    pts = cls._parse_path_d(d, num_samples)
+            elif local in ('rect', 'circle', 'ellipse', 'polygon', 'polyline'):
+                pts = cls._parse_basic_shape(local, elem)
+
+            if pts and len(pts) >= 3:
+                polygons.append(pts)
+
+        return polygons
+
+    @classmethod
+    def _tokenize_path(cls, d: str) -> List:
+        """Tokenize SVG path d attribute into commands and numbers."""
+        tokens = []
+        i = 0
+        n = len(d)
+        while i < n:
+            c = d[i]
+            if c in ' ,\t\n\r':
+                i += 1
+                continue
+            if c.isalpha():
+                tokens.append(c)
+                i += 1
+                continue
+            # Parse number (including negative, decimal, exponent)
+            start = i
+            if c in '+-':
+                i += 1
+            has_dot = False
+            while i < n and (d[i].isdigit() or (d[i] == '.' and not has_dot)):
+                if d[i] == '.':
+                    has_dot = True
+                i += 1
+            # Exponent
+            if i < n and d[i] in 'eE':
+                i += 1
+                if i < n and d[i] in '+-':
+                    i += 1
+                while i < n and d[i].isdigit():
+                    i += 1
+            if i > start:
+                try:
+                    tokens.append(float(d[start:i]))
+                except ValueError:
+                    i = start + 1  # skip bad char
+            else:
+                i += 1  # skip unrecognized
+        return tokens
+
+    @classmethod
+    def _parse_path_d(cls, d: str, num_samples: int) -> List[Tuple[float, float]]:
+        """Parse SVG path d attribute and return sampled points."""
+        tokens = cls._tokenize_path(d)
+        points: List[Tuple[float, float]] = []
+        cx, cy = 0.0, 0.0  # current point
+        sx, sy = 0.0, 0.0  # subpath start
+        last_cp = None  # last control point for S/T smooth curves
+        last_cmd = ''
+
+        i = 0
+        n = len(tokens)
+
+        def take_float() -> float:
+            nonlocal i
+            if i < n and isinstance(tokens[i], float):
+                val = tokens[i]
+                i += 1
+                return val
+            return 0.0
+
+        while i < n:
+            tok = tokens[i]
+            if isinstance(tok, str):
+                cmd = tok
+                i += 1
+            else:
+                # Implicit repeat of last command (L after M)
+                cmd = last_cmd
+                if cmd == 'M':
+                    cmd = 'L'
+                elif cmd == 'm':
+                    cmd = 'l'
+
+            if cmd in ('M', 'm'):
+                x, y = take_float(), take_float()
+                if cmd == 'm':
+                    x += cx; y += cy
+                cx, cy = x, y
+                sx, sy = x, y
+                points.append((cx, cy))
+                last_cp = None
+                last_cmd = cmd
+
+            elif cmd in ('L', 'l'):
+                x, y = take_float(), take_float()
+                if cmd == 'l':
+                    x += cx; y += cy
+                cx, cy = x, y
+                points.append((cx, cy))
+                last_cp = None
+                last_cmd = cmd
+
+            elif cmd in ('H', 'h'):
+                x = take_float()
+                if cmd == 'h':
+                    x += cx
+                cx = x
+                points.append((cx, cy))
+                last_cp = None
+                last_cmd = cmd
+
+            elif cmd in ('V', 'v'):
+                y = take_float()
+                if cmd == 'v':
+                    y += cy
+                cy = y
+                points.append((cx, cy))
+                last_cp = None
+                last_cmd = cmd
+
+            elif cmd in ('C', 'c'):
+                x1, y1 = take_float(), take_float()
+                x2, y2 = take_float(), take_float()
+                x, y = take_float(), take_float()
+                if cmd == 'c':
+                    x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy
+                pts = cls._sample_cubic_bezier((cx, cy), (x1, y1), (x2, y2), (x, y), 16)
+                points.extend(pts[1:])
+                last_cp = (x2, y2)
+                cx, cy = x, y
+                last_cmd = cmd
+
+            elif cmd in ('S', 's'):
+                # Smooth cubic: reflect last control point
+                if last_cmd in ('C', 'c', 'S', 's') and last_cp:
+                    x1 = 2 * cx - last_cp[0]
+                    y1 = 2 * cy - last_cp[1]
+                else:
+                    x1, y1 = cx, cy
+                x2, y2 = take_float(), take_float()
+                x, y = take_float(), take_float()
+                if cmd == 's':
+                    x2 += cx; y2 += cy; x += cx; y += cy
+                pts = cls._sample_cubic_bezier((cx, cy), (x1, y1), (x2, y2), (x, y), 16)
+                points.extend(pts[1:])
+                last_cp = (x2, y2)
+                cx, cy = x, y
+                last_cmd = cmd
+
+            elif cmd in ('Q', 'q'):
+                x1, y1 = take_float(), take_float()
+                x, y = take_float(), take_float()
+                if cmd == 'q':
+                    x1 += cx; y1 += cy; x += cx; y += cy
+                pts = cls._sample_quadratic_bezier((cx, cy), (x1, y1), (x, y), 12)
+                points.extend(pts[1:])
+                last_cp = (x1, y1)
+                cx, cy = x, y
+                last_cmd = cmd
+
+            elif cmd in ('T', 't'):
+                # Smooth quadratic: reflect last control point
+                if last_cmd in ('Q', 'q', 'T', 't') and last_cp:
+                    x1 = 2 * cx - last_cp[0]
+                    y1 = 2 * cy - last_cp[1]
+                else:
+                    x1, y1 = cx, cy
+                x, y = take_float(), take_float()
+                if cmd == 't':
+                    x += cx; y += cy
+                pts = cls._sample_quadratic_bezier((cx, cy), (x1, y1), (x, y), 12)
+                points.extend(pts[1:])
+                last_cp = (x1, y1)
+                cx, cy = x, y
+                last_cmd = cmd
+
+            elif cmd in ('A', 'a'):
+                # Arc: consume 7 params, approximate as line (with warning)
+                _rx = take_float(); _ry = take_float(); _rot = take_float()
+                _large = take_float(); _sweep = take_float()
+                x, y = take_float(), take_float()
+                if cmd == 'a':
+                    x += cx; y += cy
+                cls.logger.warning("SVG arc commands approximated as straight lines")
+                cx, cy = x, y
+                points.append((cx, cy))
+                last_cp = None
+                last_cmd = cmd
+
+            elif cmd in ('Z', 'z'):
+                cx, cy = sx, sy
+                last_cp = None
+                last_cmd = cmd
+
+            else:
+                i += 1  # skip unknown
+                last_cmd = cmd
+
+        if len(points) < 3:
+            return points
+        return cls._resample_evenly(points, num_samples)
+
+    @classmethod
+    def _parse_basic_shape(cls, tag: str, elem) -> Optional[List[Tuple[float, float]]]:
+        """Parse basic SVG shape elements into point lists."""
+
+        def attr(name: str, default: float = 0.0) -> float:
+            val = elem.get(name)
+            return float(val) if val is not None else default
+
+        if tag == 'rect':
+            x, y = attr('x'), attr('y')
+            w, h = attr('width'), attr('height')
+            if w <= 0 or h <= 0:
+                return None
+            return [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+        elif tag == 'circle':
+            cx, cy, r = attr('cx'), attr('cy'), attr('r')
+            if r <= 0:
+                return None
+            pts = []
+            n = 64
+            for i in range(n):
+                angle = 2 * math.pi * i / n
+                pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+            return pts
+
+        elif tag == 'ellipse':
+            cx, cy = attr('cx'), attr('cy')
+            rx, ry = attr('rx'), attr('ry')
+            if rx <= 0 or ry <= 0:
+                return None
+            pts = []
+            n = 64
+            for i in range(n):
+                angle = 2 * math.pi * i / n
+                pts.append((cx + rx * math.cos(angle), cy + ry * math.sin(angle)))
+            return pts
+
+        elif tag in ('polygon', 'polyline'):
+            raw = elem.get('points', '')
+            if not raw:
+                return None
+            # Parse space/comma separated coordinate pairs
+            nums = []
+            for tok in raw.replace(',', ' ').split():
+                try:
+                    nums.append(float(tok))
+                except ValueError:
+                    continue
+            pts = [(nums[i], nums[i + 1]) for i in range(0, len(nums) - 1, 2)]
+            return pts if len(pts) >= 3 else None
+
+        return None
+
+    @staticmethod
+    def _sample_cubic_bezier(p0, p1, p2, p3, n: int) -> List[Tuple[float, float]]:
+        """Sample n+1 points along a cubic Bezier curve."""
+        pts = []
+        for i in range(n + 1):
+            t = i / n
+            u = 1 - t
+            uu, tt = u * u, t * t
+            uuu, ttt = uu * u, tt * t
+            x = uuu * p0[0] + 3 * uu * t * p1[0] + 3 * u * tt * p2[0] + ttt * p3[0]
+            y = uuu * p0[1] + 3 * uu * t * p1[1] + 3 * u * tt * p2[1] + ttt * p3[1]
+            pts.append((x, y))
+        return pts
+
+    @staticmethod
+    def _sample_quadratic_bezier(p0, p1, p2, n: int) -> List[Tuple[float, float]]:
+        """Sample n+1 points along a quadratic Bezier curve."""
+        pts = []
+        for i in range(n + 1):
+            t = i / n
+            u = 1 - t
+            x = u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0]
+            y = u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]
+            pts.append((x, y))
+        return pts
+
+    @staticmethod
+    def _resample_evenly(points: List[Tuple[float, float]], n: int) -> List[Tuple[float, float]]:
+        """Resample a polyline to n evenly-spaced points by arc length."""
+        if len(points) < 2 or n < 2:
+            return points
+
+        # Compute cumulative arc lengths
+        lengths = [0.0]
+        for i in range(1, len(points)):
+            dx = points[i][0] - points[i - 1][0]
+            dy = points[i][1] - points[i - 1][1]
+            lengths.append(lengths[-1] + math.sqrt(dx * dx + dy * dy))
+
+        total = lengths[-1]
+        if total < 1e-10:
+            return points[:n]
+
+        result = []
+        seg = 0
+        for i in range(n):
+            target = total * i / n
+            while seg < len(lengths) - 2 and lengths[seg + 1] < target:
+                seg += 1
+            seg_len = lengths[seg + 1] - lengths[seg]
+            if seg_len < 1e-10:
+                t = 0.0
+            else:
+                t = (target - lengths[seg]) / seg_len
+            x = points[seg][0] + t * (points[seg + 1][0] - points[seg][0])
+            y = points[seg][1] + t * (points[seg + 1][1] - points[seg][1])
+            result.append((x, y))
+        return result
+
+    @staticmethod
+    def fit_to_canvas(
+        points: List[Tuple[float, float]],
+        width: float, height: float,
+        scale: Optional[float] = None,
+        margin: float = 50.0
+    ) -> List[Tuple[float, float]]:
+        """Center and scale polygon to fit within canvas dimensions."""
+        if not points:
+            return points
+
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        pw, ph = max_x - min_x, max_y - min_y
+
+        if pw < 1e-10 and ph < 1e-10:
+            return [(width / 2, height / 2)] * len(points)
+
+        if scale is None:
+            # Auto-fit: scale to fill canvas minus margin
+            avail_w = width - 2 * margin
+            avail_h = height - 2 * margin
+            scale = min(avail_w / max(pw, 1e-10), avail_h / max(ph, 1e-10))
+
+        # Center of polygon
+        pcx = (min_x + max_x) / 2
+        pcy = (min_y + max_y) / 2
+        # Center of canvas
+        ccx, ccy = width / 2, height / 2
+
+        result = []
+        for x, y in points:
+            rx = (x - pcx) * scale + ccx
+            ry = (y - pcy) * scale + ccy
+            result.append((rx, ry))
+        return result
+
+
+class PolygonBoundary:
+    """Efficient polygon boundary for constraint testing using spatial hashing."""
+
+    def __init__(self, points: List[Tuple[float, float]], cell_size: float = 30.0):
+        self.points = points
+        n = len(points)
+        self.edges = []
+        for i in range(n):
+            j = (i + 1) % n
+            self.edges.append((points[i][0], points[i][1], points[j][0], points[j][1]))
+
+        # Build spatial hash of polygon edges
+        self.cell_size = cell_size
+        self.edge_grid: Dict[Tuple[int, int], List[int]] = {}
+        for ei, (x1, y1, x2, y2) in enumerate(self.edges):
+            min_cx = int(min(x1, x2) // cell_size)
+            max_cx = int(max(x1, x2) // cell_size)
+            min_cy = int(min(y1, y2) // cell_size)
+            max_cy = int(max(y1, y2) // cell_size)
+            for cx in range(min_cx, max_cx + 1):
+                for cy in range(min_cy, max_cy + 1):
+                    key = (cx, cy)
+                    if key not in self.edge_grid:
+                        self.edge_grid[key] = []
+                    self.edge_grid[key].append(ei)
+
+    def point_in_polygon(self, x: float, y: float) -> bool:
+        """Ray casting algorithm (even-odd rule)."""
+        inside = False
+        pts = self.points
+        n = len(pts)
+        j = n - 1
+        for i in range(n):
+            xi, yi = pts[i]
+            xj, yj = pts[j]
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def distance_to_boundary(self, x: float, y: float) -> Tuple[float, float, float]:
+        """Return (distance, nearest_x, nearest_y) to polygon boundary.
+
+        Uses spatial hash for efficient nearest-edge lookup.
+        """
+        cs = self.cell_size
+        cx_i, cy_i = int(x // cs), int(y // cs)
+
+        best_dist = float('inf')
+        best_x, best_y = x, y
+
+        # Search expanding rings until we find edges
+        for ring in range(max(len(self.edge_grid), 10)):
+            found_any = False
+            for dx in range(-ring, ring + 1):
+                for dy in range(-ring, ring + 1):
+                    if abs(dx) != ring and abs(dy) != ring:
+                        continue  # Only check border cells of ring
+                    key = (cx_i + dx, cy_i + dy)
+                    edges = self.edge_grid.get(key)
+                    if edges is None:
+                        continue
+                    found_any = True
+                    for ei in edges:
+                        ex1, ey1, ex2, ey2 = self.edges[ei]
+                        nx, ny, d = self._point_to_segment(x, y, ex1, ey1, ex2, ey2)
+                        if d < best_dist:
+                            best_dist = d
+                            best_x, best_y = nx, ny
+            if found_any and best_dist <= (ring + 1) * cs * 1.5:
+                break  # Close enough, no need to search further
+
+        return best_dist, best_x, best_y
+
+    @staticmethod
+    def _point_to_segment(px, py, ax, ay, bx, by) -> Tuple[float, float, float]:
+        """Return (nearest_x, nearest_y, distance) from point to segment."""
+        abx, aby = bx - ax, by - ay
+        ab_len_sq = abx * abx + aby * aby
+        if ab_len_sq < 1e-10:
+            dx, dy = px - ax, py - ay
+            return ax, ay, math.sqrt(dx * dx + dy * dy)
+        t = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / ab_len_sq))
+        nx = ax + t * abx
+        ny = ay + t * aby
+        dx, dy = px - nx, py - ny
+        return nx, ny, math.sqrt(dx * dx + dy * dy)
+
+    def clamp_to_interior(self, x: float, y: float) -> Tuple[float, float]:
+        """If point is outside polygon, project to nearest boundary edge."""
+        if self.point_in_polygon(x, y):
+            return x, y
+        _, nx, ny = self.distance_to_boundary(x, y)
+        return nx, ny
+
+    def get_repulsion_force(self, x: float, y: float, margin: float, strength: float) -> Tuple[float, float]:
+        """Return (fx, fy) repulsion force pushing away from boundary."""
+        dist, bx, by = self.distance_to_boundary(x, y)
+
+        if dist >= margin:
+            return 0.0, 0.0
+
+        force_mag = strength * (margin / max(1.0, dist) - 1)
+
+        if dist < 1e-6:
+            # Point is on boundary; push toward polygon center
+            pts = self.points
+            pcx = sum(p[0] for p in pts) / len(pts)
+            pcy = sum(p[1] for p in pts) / len(pts)
+            dx, dy = pcx - x, pcy - y
+            d = math.sqrt(dx * dx + dy * dy)
+            if d < 1e-6:
+                return 0.0, 0.0
+            return (dx / d) * force_mag, (dy / d) * force_mag
+
+        # Push away from nearest boundary point (toward interior)
+        dx, dy = x - bx, y - by
+        d = math.sqrt(dx * dx + dy * dy)
+        if not self.point_in_polygon(x, y):
+            # Outside: push inward (toward boundary point)
+            return (-dx / d) * force_mag, (-dy / d) * force_mag
+        # Inside: push away from boundary (toward interior)
+        return (dx / d) * force_mag, (dy / d) * force_mag
+
+
 class DifferentialGrowth:
     """Optimized differential growth with spatial hashing."""
 
@@ -137,7 +643,9 @@ class DifferentialGrowth:
         shape: str = 'circle',
         bounds: Optional[Tuple[float, float, float, float]] = None,
         bound_shape: str = 'rectangle',
-        boundary_repulsion: float = 0.0
+        boundary_repulsion: float = 0.0,
+        svg_polygon: Optional[List[Tuple[float, float]]] = None,
+        svg_mode: str = 'grow'
     ):
         self.width = width
         self.height = height
@@ -163,6 +671,21 @@ class DifferentialGrowth:
 
         if random_seed is not None:
             random.seed(random_seed)
+
+        # SVG polygon handling
+        self.polygon_boundary: Optional[PolygonBoundary] = None
+        self.svg_grow_points: Optional[List[Tuple[float, float]]] = None
+
+        if svg_polygon is not None and svg_mode == 'constrain':
+            self.polygon_boundary = PolygonBoundary(svg_polygon, cell_size=self.repulsion_radius)
+            bound_shape = 'svg'
+            # Derive bounds from polygon bounding box
+            xs = [p[0] for p in svg_polygon]
+            ys = [p[1] for p in svg_polygon]
+            bounds = (min(xs), min(ys), max(xs), max(ys))
+        elif svg_polygon is not None and svg_mode == 'grow':
+            self.svg_grow_points = svg_polygon
+            shape = 'svg'
 
         # Bounding constraint (min_x, min_y, max_x, max_y defines the bounding region)
         if bounds is not None:
@@ -263,8 +786,16 @@ class DifferentialGrowth:
                 y = cy + r * math.sin(angle - math.pi/2) + random.uniform(-2, 2)
                 self.nodes.append(Node(x, y))
 
+        elif shape == 'svg':
+            # Use pre-parsed SVG polygon points with slight jitter
+            if self.svg_grow_points:
+                for px, py in self.svg_grow_points:
+                    x = px + random.uniform(-1, 1)
+                    y = py + random.uniform(-1, 1)
+                    self.nodes.append(Node(x, y))
+
         else:
-            raise ValueError(f"Unknown shape: {shape}. Use: circle, rectangle, line, triangle, star")
+            raise ValueError(f"Unknown shape: {shape}. Use: circle, rectangle, line, triangle, star, svg")
 
     def _rebuild_spatial_hash(self) -> None:
         sh = self.spatial_hash
@@ -462,6 +993,11 @@ class DifferentialGrowth:
                         node.fx -= (dx / dist_from_center) * force
                         node.fy -= (dy / dist_from_center) * force
 
+                elif self.bound_shape == 'svg' and self.polygon_boundary is not None:
+                    fx, fy = self.polygon_boundary.get_repulsion_force(nx, ny, margin, br)
+                    node.fx += fx
+                    node.fy += fy
+
         # Apply forces and update positions
         damping = self.damping
         max_vel = self.max_velocity
@@ -529,6 +1065,9 @@ class DifferentialGrowth:
                         if dist > star_radius:
                             node.x = self.bound_cx + (dx / dist) * star_radius
                             node.y = self.bound_cy + (dy / dist) * star_radius
+
+                elif self.bound_shape == 'svg' and self.polygon_boundary is not None:
+                    node.x, node.y = self.polygon_boundary.clamp_to_interior(node.x, node.y)
 
     def _would_cause_intersection(self, node_idx: int, new_x: float, new_y: float) -> bool:
         nodes = self.nodes
@@ -872,6 +1411,16 @@ Examples:
     parser.add_argument('--examples', action='store_true',
                         help='Print 30 example command lines and exit')
 
+    # SVG import arguments
+    parser.add_argument('--svg-file', type=str, default=None,
+                        help='SVG file to import as starting shape or boundary')
+    parser.add_argument('--svg-mode', choices=['grow', 'constrain'], default='grow',
+                        help='How to use SVG shape: grow from it or constrain within it')
+    parser.add_argument('--svg-scale', type=float, default=None,
+                        help='Scale factor for SVG shape (default: auto-fit to canvas)')
+    parser.add_argument('--svg-samples', type=int, default=None,
+                        help='Number of points to sample along SVG path (default: auto)')
+
     args = parser.parse_args()
 
     if args.examples:
@@ -882,6 +1431,37 @@ Examples:
         level=getattr(logging, args.log_level),
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
+
+    # Parse SVG file if provided
+    svg_polygon = None
+    if args.svg_file:
+        # Auto-determine sample count
+        if args.svg_samples is not None:
+            num_samples = args.svg_samples
+        elif args.svg_mode == 'grow':
+            num_samples = args.initial_nodes
+        else:
+            num_samples = 500
+
+        polygons = SVGPathParser.parse_file(args.svg_file, num_samples=num_samples)
+        if not polygons:
+            logging.error(f"No valid shapes found in {args.svg_file}")
+            return
+
+        # Select the largest polygon (by number of points, as proxy for complexity)
+        svg_polygon = max(polygons, key=len)
+        logging.info(f"Loaded SVG: {len(polygons)} shape(s), using largest ({len(svg_polygon)} points)")
+
+        # Scale and center to canvas
+        svg_polygon = SVGPathParser.fit_to_canvas(
+            svg_polygon, args.width, args.height,
+            scale=args.svg_scale, margin=50.0
+        )
+
+        # Set sensible default for constrain mode boundary repulsion
+        if args.svg_mode == 'constrain' and args.boundary_repulsion == 0.0:
+            args.boundary_repulsion = 0.8
+            logging.info("SVG constrain mode: auto-set boundary-repulsion to 0.8")
 
     # Handle safe mode: auto-adjust repulsion to guarantee no intersections
     repulsion = args.repulsion
@@ -917,7 +1497,9 @@ Examples:
         shape=args.shape,
         bounds=tuple(args.bounds) if args.bounds else None,
         bound_shape=args.bound_shape,
-        boundary_repulsion=args.boundary_repulsion
+        boundary_repulsion=args.boundary_repulsion,
+        svg_polygon=svg_polygon,
+        svg_mode=args.svg_mode
     )
 
     logging.info(f"Starting simulation: {args.steps} steps")
