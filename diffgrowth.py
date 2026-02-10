@@ -645,11 +645,12 @@ class DifferentialGrowth:
         bound_shape: str = 'rectangle',
         boundary_repulsion: float = 0.0,
         svg_polygon: Optional[List[Tuple[float, float]]] = None,
-        svg_mode: str = 'grow'
+        svg_mode: str = 'grow',
+        detail_scale: float = 1.0
     ):
         self.width = width
         self.height = height
-        self.base_length = min(width, height) / 40.0
+        self.base_length = min(width, height) / 40.0 * detail_scale
 
         self.min_edge_length = max(1.0, min_edge_ratio * self.base_length)
         self.max_edge_length = max(self.min_edge_length + 1, max_edge_ratio * self.base_length)
@@ -1401,6 +1402,8 @@ Examples:
                         help='Shape of bounding constraint')
     parser.add_argument('--boundary-repulsion', type=float, default=0.0,
                         help='Force pushing nodes away from bounds (0-1)')
+    parser.add_argument('--detail-scale', type=float, default=1.0,
+                        help='Global scale for pattern detail (0.5=finer, 2.0=coarser)')
     parser.add_argument('--no-intersection-check', action='store_true',
                         help='Disable intersection checking (faster, requires balanced params)')
     parser.add_argument('--safe-mode', action='store_true',
@@ -1499,7 +1502,8 @@ Examples:
         bound_shape=args.bound_shape,
         boundary_repulsion=args.boundary_repulsion,
         svg_polygon=svg_polygon,
-        svg_mode=args.svg_mode
+        svg_mode=args.svg_mode,
+        detail_scale=args.detail_scale
     )
 
     logging.info(f"Starting simulation: {args.steps} steps")
