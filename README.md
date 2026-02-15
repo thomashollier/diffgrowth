@@ -1,33 +1,81 @@
 # Differential Growth Pattern Generator
 
-A Python implementation of the differential growth algorithm for generating organic, coral-like patterns. The algorithm simulates nodes along a curve that repel each other while being attracted to neighbors, creating naturally branching structures.
+A pure Python implementation of the differential growth algorithm for generating organic, coral-like patterns. Nodes along a closed curve attract neighbors, repel distant nodes, and split edges that stretch too long, producing naturally branching structures.
 
-## Features
+No external dependencies — uses only the Python standard library. PyPy compatible for 8-10x speedup.
 
-- Multiple starting shapes (circle, rectangle, triangle, star, line)
-- Bounding box constraints with boundary repulsion
-- Smooth Bezier curve output (Catmull-Rom interpolation)
-- Spatial hashing for O(n) performance
-- Self-intersection detection and prevention
-- PyPy compatible for 8-10x speedup
+## Examples
 
-## Requirements
+### 1. Organic Growth
 
-- Python 3.8+ (CPython or PyPy)
-- No external dependencies (uses only standard library)
-
-## Quick Start
+A circle expanding into dense coral-like branching.
 
 ```bash
-# Basic usage
-python diffgrowth.py --steps 1000 --output growth.svg
-
-# Faster with PyPy (recommended)
-pypy3 diffgrowth.py --steps 2000 --output growth.svg
-
-# Show 30 example command lines with different patterns
-pypy3 diffgrowth.py --examples
+python diffgrowth.py --steps 1000 --growth 0.7 --repulsion 0.8 --noise 0.15 \
+  --seed 42 --no-intersection-check --output examples/organic.svg
 ```
+
+![Organic growth](examples/organic.svg)
+
+### 2. Bounded Circle
+
+Growth constrained inside a circular boundary — the curve fills the available space.
+
+```bash
+python diffgrowth.py --steps 1000 --bounds 100 100 700 700 --bound-shape circle \
+  --boundary-repulsion 0.8 --growth 0.6 --repulsion 0.7 --noise 0.12 \
+  --seed 42 --no-intersection-check --output examples/bounded_circle.svg
+```
+
+![Bounded circle](examples/bounded_circle.svg)
+
+### 3. Star Burst
+
+A star starting shape that blooms outward with high noise for an energetic look.
+
+```bash
+python diffgrowth.py --steps 800 --shape star --initial-nodes 30 \
+  --growth 0.8 --repulsion 0.6 --noise 0.25 --alignment 0.3 \
+  --seed 42 --no-intersection-check --output examples/star_burst.svg
+```
+
+![Star burst](examples/star_burst.svg)
+
+### 4. Fine Detail
+
+Using `--detail-scale 0.5` to halve the pattern grain for intricate, tightly-packed lines.
+
+```bash
+python diffgrowth.py --steps 1200 --detail-scale 0.5 \
+  --growth 0.6 --repulsion 0.7 --noise 0.1 \
+  --seed 42 --no-intersection-check --output examples/fine_detail.svg
+```
+
+![Fine detail](examples/fine_detail.svg)
+
+### 5. SVG Constrained
+
+Growth filling an imported SVG shape boundary.
+
+```bash
+python diffgrowth.py --svg-file badge-diamond-and-plus-round.svg --svg-mode constrain \
+  --detail-scale 0.6 --growth 0.6 --repulsion 0.7 --steps 1000 \
+  --seed 42 --no-intersection-check --output examples/svg_constrain.svg
+```
+
+![SVG constrained](examples/svg_constrain.svg)
+
+### 6. Thick Compact
+
+Using `--detail-scale 2.0` for coarse, chunky branches with low growth to keep them close.
+
+```bash
+python diffgrowth.py --steps 800 --detail-scale 2.0 \
+  --growth 0.4 --repulsion 0.6 --noise 0.1 --alignment 0.6 \
+  --seed 42 --no-intersection-check --output examples/thick_compact.svg
+```
+
+![Thick compact](examples/thick_compact.svg)
 
 ## Parameters
 
@@ -41,6 +89,7 @@ pypy3 diffgrowth.py --examples
 | `--alignment` | 0.5 | Smoothing force toward neighbor midpoint |
 | `--noise` | 0.1 | Random perturbation per step |
 | `--damping` | 0.5 | Velocity dampening (0=instant stop, 1=no friction) |
+| `--detail-scale` | 1.0 | Global pattern grain (0.5=finer, 2.0=coarser) |
 
 ### Shape & Constraints
 
@@ -50,6 +99,10 @@ pypy3 diffgrowth.py --examples
 | `--bounds` | none | Bounding region: `MIN_X MIN_Y MAX_X MAX_Y` |
 | `--bound-shape` | rectangle | Shape of bound: `rectangle`, `circle`, `star` |
 | `--boundary-repulsion` | 0 | Force pushing away from bounds (0-1) |
+| `--svg-file` | none | SVG file to import as shape or boundary |
+| `--svg-mode` | grow | How to use SVG: `grow` (radiate outward) or `constrain` (fill inside) |
+| `--svg-scale` | auto | Scale factor for imported SVG |
+| `--svg-samples` | auto | Points to sample along SVG path |
 
 ### Other Options
 
@@ -65,110 +118,31 @@ pypy3 diffgrowth.py --examples
 | `--output` | growth.svg | Output filename |
 | `--examples` | off | Print 30 example command lines and exit |
 
-## Style Recipes
+## How It Works
 
-### Dense Branching
-```bash
-pypy3 diffgrowth.py --steps 2000 --growth 0.7 --repulsion 0.8 --noise 0.15 --alignment 0.5 --no-intersection-check
-```
+Each simulation step:
+1. **Attraction** pulls neighboring nodes together to maintain edge connectivity
+2. **Repulsion** pushes non-adjacent nodes apart to prevent overlap
+3. **Growth** applies outward normal force to expand the curve
+4. **Alignment** smooths the curve toward neighbor midpoints
+5. **Noise** adds randomness for organic variation
+6. **Edge splitting** subdivides edges that exceed the maximum length
 
-### Regular/Symmetric
-```bash
-pypy3 diffgrowth.py --steps 2000 --growth 0.5 --repulsion 0.6 --noise 0.05 --alignment 0.7 --no-intersection-check
-```
+A spatial hash grid provides O(1) neighbor lookups, making the algorithm efficient even with thousands of nodes.
 
-### Organic/Natural
-```bash
-pypy3 diffgrowth.py --steps 2000 --growth 0.6 --repulsion 0.65 --noise 0.18 --alignment 0.5 --no-intersection-check
-```
-
-### Sparse/Minimal
-```bash
-pypy3 diffgrowth.py --steps 2000 --growth 0.4 --repulsion 0.4 --noise 0.1 --alignment 0.5 --no-intersection-check
-```
-
-## Shape Examples
-
-```bash
-# Rectangle starting shape
-pypy3 diffgrowth.py --shape rectangle --steps 1000 --output rectangle.svg
-
-# Triangle
-pypy3 diffgrowth.py --shape triangle --steps 1000 --output triangle.svg
-
-# Star
-pypy3 diffgrowth.py --shape star --steps 1500 --growth 0.7 --repulsion 0.8 --output star.svg
-
-# Line (open curve that grows outward)
-pypy3 diffgrowth.py --shape line --steps 1000 --output line.svg
-```
-
-## Bounding Shape Examples
-
-```bash
-# Constrained to rectangular bounds
-pypy3 diffgrowth.py --bounds 100 100 700 700 --bound-shape rectangle --boundary-repulsion 0.8 --steps 1000 --output bound_rect.svg
-
-# Constrained to circular bounds
-pypy3 diffgrowth.py --bounds 100 100 700 700 --bound-shape circle --boundary-repulsion 0.8 --steps 1000 --output bound_circle.svg
-
-# Constrained to star-shaped bounds (use higher repulsion to avoid intersections)
-pypy3 diffgrowth.py --bounds 50 50 750 750 --bound-shape star --boundary-repulsion 1.0 --repulsion 0.9 --steps 1000 --output bound_star.svg
-```
-
-## Understanding Parameters
-
-### Growth vs Repulsion Ratio
-
-This is the key driver of pattern complexity:
+### Key Relationships
 
 | Ratio | Effect |
 |-------|--------|
 | growth < repulsion | Expands freely, many branches |
-| growth ≈ repulsion | Balanced branching |
+| growth ~ repulsion | Balanced branching |
 | growth > repulsion | Compact, limited growth |
 
-### Noise Effect
-
-- **0.05**: Smooth, symmetric patterns
-- **0.10**: Slightly varied, natural-looking
-- **0.15**: Noticeable asymmetry, diverse branch sizes
-- **0.25**: Chaotic, highly irregular (may cause intersections)
-
-### Safe Parameter Constraint
-
-For intersection-free results without checking:
-```
-repulsion > 0.2 * growth + 3 * noise
-```
-
-Use `--safe-mode` to auto-adjust repulsion, or check the warning message for recommended values.
+For intersection-free results without checking: `repulsion > 0.2 * growth + 3 * noise`. Use `--safe-mode` to auto-adjust.
 
 ## Performance
 
-| Interpreter | 1000 steps | Relative |
-|-------------|------------|----------|
-| CPython 3.x | ~30s | 1x |
-| PyPy 3.x | ~3s | 10x |
-
-Use PyPy for best performance. Install with: `brew install pypy3` (macOS) or `apt install pypy3` (Linux).
-
-## Output
-
-The generator produces SVG files with:
-- Smooth Bezier curves (Catmull-Rom to cubic Bezier conversion)
-- Black fill with red stroke (configurable in code)
-- Auto-fitted viewBox
-
-## Algorithm Overview
-
-1. **Initialize** nodes along starting shape
-2. **Each step**:
-   - Calculate forces: attraction, repulsion, alignment, growth, noise, boundary
-   - Apply velocity with damping
-   - Optionally check for self-intersections
-   - Split edges that exceed max length
-3. **Export** smooth curve as SVG
+PyPy gives ~10x speedup over CPython. Install with `brew install pypy3` (macOS) or `apt install pypy3` (Linux).
 
 ## License
 
