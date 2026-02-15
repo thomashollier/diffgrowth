@@ -77,6 +77,17 @@ pypy3 diffgrowth.py --steps 800 --detail-scale 2.0 \
 
 ![Thick compact](examples/thick_compact.svg)
 
+### 7. Dense 300
+
+Starting with 300 nodes for a large, complex initial circle. Branches thicken toward the edges where there's no inward pressure from neighboring growth.
+
+```bash
+pypy3 diffgrowth.py --steps 500 --growth 0.6 --repulsion 0.7 --noise 0.1 \
+  --seed 42 --initial-nodes 300 --output examples/dense_300.svg
+```
+
+![Dense 300](examples/dense_300.svg)
+
 ## Parameters
 
 ### Force Parameters (0-1 scale)
