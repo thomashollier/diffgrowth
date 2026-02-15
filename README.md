@@ -11,8 +11,8 @@ No external dependencies — uses only the Python standard library. PyPy compati
 A circle expanding into dense coral-like branching.
 
 ```bash
-python diffgrowth.py --steps 1000 --growth 0.7 --repulsion 0.8 --noise 0.15 \
-  --seed 42 --no-intersection-check --output examples/organic.svg
+pypy3 diffgrowth.py --steps 1000 --growth 0.7 --repulsion 0.8 --noise 0.15 \
+  --seed 42 --output examples/organic.svg
 ```
 
 ![Organic growth](examples/organic.svg)
@@ -22,9 +22,9 @@ python diffgrowth.py --steps 1000 --growth 0.7 --repulsion 0.8 --noise 0.15 \
 Growth constrained inside a circular boundary — the curve fills the available space.
 
 ```bash
-python diffgrowth.py --steps 1000 --bounds 100 100 700 700 --bound-shape circle \
+pypy3 diffgrowth.py --steps 1000 --bounds 100 100 700 700 --bound-shape circle \
   --boundary-repulsion 0.8 --growth 0.6 --repulsion 0.7 --noise 0.12 \
-  --seed 42 --no-intersection-check --output examples/bounded_circle.svg
+  --seed 42 --output examples/bounded_circle.svg
 ```
 
 ![Bounded circle](examples/bounded_circle.svg)
@@ -34,9 +34,9 @@ python diffgrowth.py --steps 1000 --bounds 100 100 700 700 --bound-shape circle 
 A star starting shape that blooms outward with high noise for an energetic look.
 
 ```bash
-python diffgrowth.py --steps 800 --shape star --initial-nodes 30 \
+pypy3 diffgrowth.py --steps 800 --shape star --initial-nodes 30 \
   --growth 0.8 --repulsion 0.6 --noise 0.25 --alignment 0.3 \
-  --seed 42 --no-intersection-check --output examples/star_burst.svg
+  --seed 42 --output examples/star_burst.svg
 ```
 
 ![Star burst](examples/star_burst.svg)
@@ -46,9 +46,9 @@ python diffgrowth.py --steps 800 --shape star --initial-nodes 30 \
 Using `--detail-scale 0.5` to halve the pattern grain for intricate, tightly-packed lines.
 
 ```bash
-python diffgrowth.py --steps 1200 --detail-scale 0.5 \
+pypy3 diffgrowth.py --steps 1200 --detail-scale 0.5 \
   --growth 0.6 --repulsion 0.7 --noise 0.1 \
-  --seed 42 --no-intersection-check --output examples/fine_detail.svg
+  --seed 42 --output examples/fine_detail.svg
 ```
 
 ![Fine detail](examples/fine_detail.svg)
@@ -58,9 +58,9 @@ python diffgrowth.py --steps 1200 --detail-scale 0.5 \
 Growth filling an imported SVG shape boundary.
 
 ```bash
-python diffgrowth.py --svg-file badge-diamond-and-plus-round.svg --svg-mode constrain \
+pypy3 diffgrowth.py --svg-file badge-diamond-and-plus-round.svg --svg-mode constrain \
   --detail-scale 0.6 --growth 0.6 --repulsion 0.7 --steps 1000 \
-  --seed 42 --no-intersection-check --output examples/svg_constrain.svg
+  --seed 42 --output examples/svg_constrain.svg
 ```
 
 ![SVG constrained](examples/svg_constrain.svg)
@@ -70,9 +70,9 @@ python diffgrowth.py --svg-file badge-diamond-and-plus-round.svg --svg-mode cons
 Using `--detail-scale 2.0` for coarse, chunky branches with low growth to keep them close.
 
 ```bash
-python diffgrowth.py --steps 800 --detail-scale 2.0 \
+pypy3 diffgrowth.py --steps 800 --detail-scale 2.0 \
   --growth 0.4 --repulsion 0.6 --noise 0.1 --alignment 0.6 \
-  --seed 42 --no-intersection-check --output examples/thick_compact.svg
+  --seed 42 --output examples/thick_compact.svg
 ```
 
 ![Thick compact](examples/thick_compact.svg)
@@ -113,7 +113,8 @@ python diffgrowth.py --steps 800 --detail-scale 2.0 \
 | `--seed` | random | Random seed for reproducibility |
 | `--width` | 800 | Canvas width |
 | `--height` | 800 | Canvas height |
-| `--no-intersection-check` | off | Disable intersection checking (faster) |
+| `--no-intersection-check` | off | Disable runtime intersection checking (faster) |
+| `--no-post-process` | off | Skip post-process intersection cleanup |
 | `--safe-mode` | off | Auto-adjust repulsion for safe fast mode |
 | `--output` | growth.svg | Output filename |
 | `--examples` | off | Print 30 example command lines and exit |
@@ -129,6 +130,8 @@ Each simulation step:
 6. **Edge splitting** subdivides edges that exceed the maximum length
 
 A spatial hash grid provides O(1) neighbor lookups, making the algorithm efficient even with thousands of nodes.
+
+After simulation, a post-process step resolves any remaining self-intersections using 2-opt swaps — reversing the node order between two crossing edges so they reconnect without crossing. This is purely topological (no node positions change) and guarantees intersection-free output.
 
 ### Key Relationships
 

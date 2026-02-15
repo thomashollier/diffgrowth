@@ -1243,6 +1243,43 @@ class DifferentialGrowth:
 
         return intersections
 
+    def resolve_intersections(self) -> int:
+        """Resolve self-intersections via 2-opt segment reversal.
+
+        When edges (i, i+1) and (j, j+1) cross, reversing the node order
+        between them reconnects the path so the crossing disappears.
+        One reversal per iteration since indices shift after each swap.
+
+        Returns the number of intersections resolved.
+        """
+        total_resolved = 0
+
+        while True:
+            intersections = self.check_self_intersections()
+            if not intersections:
+                if total_resolved > 0:
+                    logging.info(f"All intersections resolved ({total_resolved} 2-opt swap(s))")
+                return total_resolved
+
+            # Resolve one crossing per pass (indices shift after reversal)
+            edge_i, edge_j, ix, iy = intersections[0]
+            n = len(self.nodes)
+            i, j = min(edge_i, edge_j), max(edge_i, edge_j)
+
+            # Reverse the shorter of the two arcs between the crossing edges
+            forward_len = j - i  # nodes in segment [i+1 .. j]
+            if forward_len <= n // 2:
+                self.nodes[i + 1:j + 1] = self.nodes[i + 1:j + 1][::-1]
+            else:
+                # Reverse the wrap-around segment [j+1 .. n-1, 0 .. i]
+                backward_len = n - forward_len
+                indices = [(j + 1 + k) % n for k in range(backward_len)]
+                for k in range(backward_len // 2):
+                    a, b = indices[k], indices[backward_len - 1 - k]
+                    self.nodes[a], self.nodes[b] = self.nodes[b], self.nodes[a]
+
+            total_resolved += 1
+
     def _intersection_point(self, p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y) -> Tuple[float, float]:
         """Calculate the intersection point of two line segments."""
         denom = (p4y - p3y) * (p2x - p1x) - (p4x - p3x) * (p2y - p1y)
@@ -1406,6 +1443,8 @@ Examples:
                         help='Global scale for pattern detail (0.5=finer, 2.0=coarser)')
     parser.add_argument('--no-intersection-check', action='store_true',
                         help='Disable intersection checking (faster, requires balanced params)')
+    parser.add_argument('--no-post-process', action='store_true',
+                        help='Skip post-process intersection cleanup')
     parser.add_argument('--safe-mode', action='store_true',
                         help='Auto-adjust repulsion to ensure no intersections, disables checking')
     parser.add_argument('--output', default='growth.svg')
@@ -1514,10 +1553,16 @@ Examples:
         if (i + 1) % 50 == 0:
             logging.info(f"Step {i + 1}/{args.steps} - {len(sim.nodes)} nodes")
 
-    # Always validate for self-intersections before export
+    # Post-process: resolve self-intersections
+    if not args.no_post_process:
+        resolved = sim.resolve_intersections()
+        if resolved:
+            logging.info(f"Post-process resolved {resolved} intersection(s)")
+
+    # Final intersection report
     intersections = sim.check_self_intersections()
     if intersections:
-        logging.warning(f"Intersection report: {len(intersections)} self-intersection(s) found")
+        logging.warning(f"Intersection report: {len(intersections)} self-intersection(s) remain")
         for i, j, x, y in intersections[:10]:  # Show first 10
             logging.warning(f"  Edges {i}-{j} intersect at ({x:.1f}, {y:.1f})")
         if len(intersections) > 10:
