@@ -53,17 +53,19 @@ pypy3 diffgrowth.py --steps 1200 --detail-scale 0.5 \
 
 ![Fine detail](examples/fine_detail.svg)
 
-### 5. SVG Constrained
+### 5. Heart Growth
 
-Growth filling an imported SVG shape boundary.
+Differential growth filling a heart SVG boundary, starting from between the lobes. Brown core aging to green tips.
 
 ```bash
-pypy3 diffgrowth.py --svg-file badge-diamond-and-plus-round.svg --svg-mode constrain \
-  --detail-scale 0.6 --growth 0.6 --repulsion 0.7 --steps 1000 \
-  --seed 42 --output examples/svg_constrain.svg
+pypy3 diffgrowth.py --svg-file heart.svg --svg-mode constrain --detail-scale 0.6 \
+  --growth 0.6 --repulsion 0.7 --noise 0.1 --steps 2500 \
+  --seed 42 --start-offset 0 -70 \
+  --stroke-color brown --stroke-tip forestgreen --fill-color black \
+  --output examples/heart_growth.svg
 ```
 
-![SVG constrained](examples/svg_constrain.svg)
+![Heart growth](examples/heart_growth.svg)
 
 ### 6. Thick Compact
 
@@ -126,20 +128,6 @@ pypy3 diffgrowth.py --steps 1000 --growth 0.7 --repulsion 0.8 --noise 0.15 \
 ```
 
 ![Twisted growth](examples/twist.svg)
-
-### 11. Heart Growth
-
-Differential growth filling a heart SVG boundary, starting from between the lobes. Brown core aging to green tips.
-
-```bash
-pypy3 diffgrowth.py --svg-file heart.svg --svg-mode constrain --detail-scale 0.6 \
-  --growth 0.6 --repulsion 0.7 --noise 0.1 --steps 2500 \
-  --seed 42 --start-offset 0 -70 \
-  --stroke-color brown --stroke-tip forestgreen --fill-color black \
-  --output examples/heart_growth.svg
-```
-
-![Heart growth](examples/heart_growth.svg)
 
 ## Parameters
 
