@@ -1290,7 +1290,10 @@ class DifferentialGrowth:
         iy = p1y + ua * (p2y - p1y)
         return ix, iy
 
-    def export_svg(self, filename: str) -> None:
+    def export_svg(self, filename: str, variable_stroke: bool = False,
+                   stroke_curves: float = 6.0, stroke_straights: float = 0.5,
+                   stroke_angle: float = 0.0, stroke_multiplier: float = 1.0,
+                   stroke_color: str = 'red', fill_color: str = 'black') -> None:
         nodes = self.nodes
         n = len(nodes)
         if n == 0:
@@ -1308,29 +1311,142 @@ class DifferentialGrowth:
         svg.set('viewBox', f"{min_x:.2f} {min_y:.2f} {max_x - min_x:.2f} {max_y - min_y:.2f}")
         svg.set('xmlns', 'http://www.w3.org/2000/svg')
 
-        # Catmull-Rom to Bezier for smooth curves
         points = [(node.x, node.y) for node in nodes]
-        path_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
 
-        for i in range(n):
-            p0 = points[(i - 1) % n]
-            p1 = points[i]
-            p2 = points[(i + 1) % n]
-            p3 = points[(i + 2) % n]
+        if not variable_stroke:
+            # Single path with uniform stroke
+            path_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
+            for i in range(n):
+                p0 = points[(i - 1) % n]
+                p1 = points[i]
+                p2 = points[(i + 1) % n]
+                p3 = points[(i + 2) % n]
+                cp1x = p1[0] + (p2[0] - p0[0]) / 6
+                cp1y = p1[1] + (p2[1] - p0[1]) / 6
+                cp2x = p2[0] - (p3[0] - p1[0]) / 6
+                cp2y = p2[1] - (p3[1] - p1[1]) / 6
+                path_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
 
-            # Catmull-Rom to Bezier conversion
-            cp1x = p1[0] + (p2[0] - p0[0]) / 6
-            cp1y = p1[1] + (p2[1] - p0[1]) / 6
-            cp2x = p2[0] - (p3[0] - p1[0]) / 6
-            cp2y = p2[1] - (p3[1] - p1[1]) / 6
+            path = ET.SubElement(svg, 'path')
+            path.set('d', path_data)
+            path.set('stroke', stroke_color)
+            path.set('stroke-width', '3')
+            path.set('fill', fill_color)
+        else:
+            # Per-segment paths with curvature-dependent stroke width
+            # Compute curvature at each node (Menger curvature from 3 points)
+            curvatures = []
+            for i in range(n):
+                px, py = points[(i - 1) % n]
+                cx, cy = points[i]
+                nx, ny = points[(i + 1) % n]
+                # Triangle side lengths
+                a = math.sqrt((cx - px)**2 + (cy - py)**2)
+                b = math.sqrt((nx - cx)**2 + (ny - cy)**2)
+                c = math.sqrt((nx - px)**2 + (ny - py)**2)
+                # Twice the signed area
+                area2 = abs((cx - px) * (ny - py) - (nx - px) * (cy - py))
+                denom = a * b * c
+                curvatures.append(area2 / denom if denom > 1e-10 else 0.0)
 
-            path_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
+            # Map curvature to stroke width
+            sorted_c = sorted(curvatures)
+            ref_curv = sorted_c[len(sorted_c) // 2] * 3  # 3x median as "high"
+            if ref_curv < 1e-10:
+                ref_curv = 1.0
 
-        path = ET.SubElement(svg, 'path')
-        path.set('d', path_data)
-        path.set('stroke', 'red')
-        path.set('stroke-width', '3')
-        path.set('fill', 'black')
+            # Compute per-node tangent directions, normals, and widths
+            angle_rad = math.radians(stroke_angle)
+            vec_x = math.cos(angle_rad)
+            vec_y = math.sin(angle_rad)
+
+            normals = []
+            widths = []
+            for i in range(n):
+                tx = points[(i + 1) % n][0] - points[(i - 1) % n][0]
+                ty = points[(i + 1) % n][1] - points[(i - 1) % n][1]
+                tlen = math.sqrt(tx * tx + ty * ty)
+                if tlen > 1e-10:
+                    normals.append((-ty / tlen, tx / tlen))
+                    # Directional multiplier: alignment of tangent with vector
+                    alignment = abs((tx / tlen) * vec_x + (ty / tlen) * vec_y)
+                    dir_mult = 1.0 + (stroke_multiplier - 1.0) * alignment
+                else:
+                    normals.append((0.0, 0.0))
+                    dir_mult = 1.0
+
+                # Curvature-based width * directional multiplier
+                t = min(curvatures[i] / ref_curv, 1.0)
+                w = stroke_straights + t * (stroke_curves - stroke_straights)
+                widths.append(w * dir_mult)
+
+            # Background fill
+            bg_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
+            for i in range(n):
+                p1 = points[i]
+                p2 = points[(i + 1) % n]
+                p0 = points[(i - 1) % n]
+                p3 = points[(i + 2) % n]
+                cp1x = p1[0] + (p2[0] - p0[0]) / 6
+                cp1y = p1[1] + (p2[1] - p0[1]) / 6
+                cp2x = p2[0] - (p3[0] - p1[0]) / 6
+                cp2y = p2[1] - (p3[1] - p1[1]) / 6
+                bg_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
+            bg = ET.SubElement(svg, 'path')
+            bg.set('d', bg_data)
+            bg.set('stroke', 'none')
+            bg.set('fill', fill_color)
+
+            # Draw each segment as a filled tapered ribbon
+            for i in range(n):
+                i1 = (i + 1) % n
+                p0 = points[(i - 1) % n]
+                p1 = points[i]
+                p2 = points[i1]
+                p3 = points[(i + 2) % n]
+
+                # Catmull-Rom to Bezier control points
+                cp1x = p1[0] + (p2[0] - p0[0]) / 6
+                cp1y = p1[1] + (p2[1] - p0[1]) / 6
+                cp2x = p2[0] - (p3[0] - p1[0]) / 6
+                cp2y = p2[1] - (p3[1] - p1[1]) / 6
+
+                # Half-widths at start and end
+                hw1 = widths[i] * 0.5
+                hw2 = widths[i1] * 0.5
+                n1x, n1y = normals[i]
+                n2x, n2y = normals[i1]
+
+                # Interpolate normal offset for control points (1/3 and 2/3)
+                hw_cp1 = hw1 + (hw2 - hw1) / 3
+                hw_cp2 = hw1 + (hw2 - hw1) * 2 / 3
+                nc1x = n1x + (n2x - n1x) / 3
+                nc1y = n1y + (n2y - n1y) / 3
+                nc2x = n1x + (n2x - n1x) * 2 / 3
+                nc2y = n1y + (n2y - n1y) * 2 / 3
+
+                # Left side (positive normal offset)
+                l1x, l1y = p1[0] + n1x * hw1, p1[1] + n1y * hw1
+                lc1x, lc1y = cp1x + nc1x * hw_cp1, cp1y + nc1y * hw_cp1
+                lc2x, lc2y = cp2x + nc2x * hw_cp2, cp2y + nc2y * hw_cp2
+                l2x, l2y = p2[0] + n2x * hw2, p2[1] + n2y * hw2
+
+                # Right side (negative normal offset)
+                r1x, r1y = p1[0] - n1x * hw1, p1[1] - n1y * hw1
+                rc1x, rc1y = cp1x - nc1x * hw_cp1, cp1y - nc1y * hw_cp1
+                rc2x, rc2y = cp2x - nc2x * hw_cp2, cp2y - nc2y * hw_cp2
+                r2x, r2y = p2[0] - n2x * hw2, p2[1] - n2y * hw2
+
+                # Closed shape: left curve forward, right curve backward
+                d = (f"M {l1x:.2f} {l1y:.2f} "
+                     f"C {lc1x:.2f} {lc1y:.2f}, {lc2x:.2f} {lc2y:.2f}, {l2x:.2f} {l2y:.2f} "
+                     f"L {r2x:.2f} {r2y:.2f} "
+                     f"C {rc2x:.2f} {rc2y:.2f}, {rc1x:.2f} {rc1y:.2f}, {r1x:.2f} {r1y:.2f} Z")
+
+                seg = ET.SubElement(svg, 'path')
+                seg.set('d', d)
+                seg.set('fill', stroke_color)
+                seg.set('stroke', 'none')
 
         ET.ElementTree(svg).write(filename)
         self.logger.info(f"Exported {filename} ({n} nodes)")
@@ -1447,6 +1563,20 @@ Examples:
                         help='Skip post-process intersection cleanup')
     parser.add_argument('--safe-mode', action='store_true',
                         help='Auto-adjust repulsion to ensure no intersections, disables checking')
+    parser.add_argument('--variable-stroke', action='store_true',
+                        help='Vary stroke width by local curvature and direction')
+    parser.add_argument('--stroke-curves', type=float, default=6.0,
+                        help='Stroke width at tight curves (default: 6.0)')
+    parser.add_argument('--stroke-straights', type=float, default=0.5,
+                        help='Stroke width at straight sections (default: 0.5)')
+    parser.add_argument('--stroke-angle', type=float, default=0.0,
+                        help='Direction angle in degrees for directional thickness (0-360)')
+    parser.add_argument('--stroke-multiplier', type=float, default=1.0,
+                        help='Thickness multiplier parallel to stroke-angle (perp=1.0)')
+    parser.add_argument('--stroke-color', default='red',
+                        help='Stroke/line color (default: red)')
+    parser.add_argument('--fill-color', default='black',
+                        help='Fill color for closed curve interior (default: black)')
     parser.add_argument('--output', default='growth.svg')
     parser.add_argument('--log-level', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
@@ -1571,7 +1701,10 @@ Examples:
     else:
         logging.info("Intersection report: clean (no self-intersections)")
 
-    sim.export_svg(args.output)
+    sim.export_svg(args.output, variable_stroke=args.variable_stroke,
+                   stroke_curves=args.stroke_curves, stroke_straights=args.stroke_straights,
+                   stroke_angle=args.stroke_angle, stroke_multiplier=args.stroke_multiplier,
+                   stroke_color=args.stroke_color, fill_color=args.fill_color)
 
     # Report statistics
     logging.info(f"Intersection checks: {sim.intersection_checks}")

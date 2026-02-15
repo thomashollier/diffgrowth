@@ -88,6 +88,19 @@ pypy3 diffgrowth.py --steps 500 --growth 0.6 --repulsion 0.7 --noise 0.1 \
 
 ![Dense 300](examples/dense_300.svg)
 
+### 8. Calligraphic
+
+Variable stroke width driven by direction — segments parallel to 45° get 7× thicker, like an angled pen nib.
+
+```bash
+pypy3 diffgrowth.py --steps 800 --growth 0.7 --repulsion 0.8 --noise 0.15 \
+  --seed 77 --variable-stroke --stroke-straights 1 --stroke-curves 1 \
+  --stroke-multiplier 7 --stroke-angle 45 \
+  --stroke-color black --fill-color white --output examples/calligraphic.svg
+```
+
+![Calligraphic](examples/calligraphic.svg)
+
 ## Parameters
 
 ### Force Parameters (0-1 scale)
@@ -127,6 +140,13 @@ pypy3 diffgrowth.py --steps 500 --growth 0.6 --repulsion 0.7 --noise 0.1 \
 | `--no-intersection-check` | off | Disable runtime intersection checking (faster) |
 | `--no-post-process` | off | Skip post-process intersection cleanup |
 | `--safe-mode` | off | Auto-adjust repulsion for safe fast mode |
+| `--variable-stroke` | off | Enable variable stroke width rendering |
+| `--stroke-curves` | 6.0 | Stroke width at tight curves |
+| `--stroke-straights` | 0.5 | Stroke width at straight sections |
+| `--stroke-angle` | 0 | Direction angle for directional thickness (0-360) |
+| `--stroke-multiplier` | 1.0 | Thickness multiplier parallel to stroke-angle |
+| `--stroke-color` | red | Stroke/line color |
+| `--fill-color` | black | Fill color for curve interior |
 | `--output` | growth.svg | Output filename |
 | `--examples` | off | Print 30 example command lines and exit |
 
