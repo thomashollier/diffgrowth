@@ -17,17 +17,45 @@ import xml.etree.ElementTree as ET
 from typing import List, Tuple, Optional, Dict, Set
 
 
+_NAMED_COLORS = {
+    'black': (0, 0, 0), 'white': (255, 255, 255), 'red': (255, 0, 0),
+    'green': (0, 128, 0), 'blue': (0, 0, 255), 'yellow': (255, 255, 0),
+    'cyan': (0, 255, 255), 'magenta': (255, 0, 255), 'orange': (255, 165, 0),
+    'brown': (139, 90, 43), 'darkgreen': (0, 100, 0), 'forestgreen': (34, 139, 34),
+    'limegreen': (50, 205, 50), 'darkred': (139, 0, 0), 'crimson': (220, 20, 60),
+    'navy': (0, 0, 128), 'teal': (0, 128, 128), 'purple': (128, 0, 128),
+    'gray': (128, 128, 128), 'grey': (128, 128, 128), 'silver': (192, 192, 192),
+    'gold': (255, 215, 0), 'coral': (255, 127, 80), 'salmon': (250, 128, 114),
+    'olive': (128, 128, 0), 'sienna': (160, 82, 45), 'tan': (210, 180, 140),
+    'ivory': (255, 255, 240), 'khaki': (240, 230, 140),
+}
+
+
+def parse_color(color: str) -> Tuple[int, int, int]:
+    """Parse a color string to (r, g, b). Supports named colors and #RRGGBB hex."""
+    c = color.strip().lower()
+    if c in _NAMED_COLORS:
+        return _NAMED_COLORS[c]
+    if c.startswith('#') and len(c) == 7:
+        return int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+    if c.startswith('rgb(') and c.endswith(')'):
+        parts = c[4:-1].split(',')
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    return _NAMED_COLORS.get(c, (255, 0, 0))
+
+
 class Node:
     """Optimized node using __slots__ for faster attribute access."""
-    __slots__ = ('x', 'y', 'vx', 'vy', 'fx', 'fy')
+    __slots__ = ('x', 'y', 'vx', 'vy', 'fx', 'fy', 'birth_step')
 
-    def __init__(self, x: float, y: float):
+    def __init__(self, x: float, y: float, birth_step: int = 0):
         self.x = x
         self.y = y
         self.vx = 0.0
         self.vy = 0.0
         self.fx = 0.0
         self.fy = 0.0
+        self.birth_step = birth_step
 
 
 class SpatialHash:
@@ -646,7 +674,11 @@ class DifferentialGrowth:
         boundary_repulsion: float = 0.0,
         svg_polygon: Optional[List[Tuple[float, float]]] = None,
         svg_mode: str = 'grow',
-        detail_scale: float = 1.0
+        detail_scale: float = 1.0,
+        directional_strength: float = 0.0,
+        directional_angle: float = 270.0,
+        twist_strength: float = 0.0,
+        start_offset: Optional[Tuple[float, float]] = None
     ):
         self.width = width
         self.height = height
@@ -702,10 +734,17 @@ class DifferentialGrowth:
         self.bound_shape = bound_shape
         self.boundary_repulsion = boundary_repulsion * self._REPULSION_SCALE
 
+        # Directional force and twist
+        self.dir_strength = directional_strength * self._GROWTH_SCALE
+        self.dir_angle_rad = math.radians(directional_angle)
+        self.twist_strength = twist_strength * self._GROWTH_SCALE
+
         # Statistics tracking
         self.intersections_blocked = 0
         self.intersection_checks = 0
+        self.current_step = 0
 
+        self.start_offset = start_offset or (0.0, 0.0)
         self.shape = shape
         self.nodes: List[Node] = []
         self._create_initial_nodes(initial_nodes, shape)
@@ -718,7 +757,8 @@ class DifferentialGrowth:
         )
 
     def _create_initial_nodes(self, count: int, shape: str = 'circle') -> None:
-        cx, cy = self.width / 2, self.height / 2
+        cx = self.width / 2 + self.start_offset[0]
+        cy = self.height / 2 + self.start_offset[1]
         size = min(self.width, self.height) / 8
 
         if shape == 'circle':
@@ -825,6 +865,14 @@ class DifferentialGrowth:
         for node in nodes:
             node.fx = 0.0
             node.fy = 0.0
+
+        # Directional + twist parameters
+        dir_str = self.dir_strength
+        dir_fx = math.cos(self.dir_angle_rad) * dir_str
+        dir_fy = math.sin(self.dir_angle_rad) * dir_str
+        twist_str = self.twist_strength
+        center_x = self.width * 0.5
+        center_y = self.height * 0.5
 
         # Cache frequently used values
         min_edge = self.min_edge_length
@@ -936,6 +984,19 @@ class DifferentialGrowth:
             # --- Noise ---
             node.fx += random.uniform(-1, 1) * noise_factor
             node.fy += random.uniform(-1, 1) * noise_factor
+
+            # --- Directional force (uniform) ---
+            node.fx += dir_fx
+            node.fy += dir_fy
+
+            # --- Twist (tangential force around center) ---
+            if twist_str != 0.0:
+                dx_c = nx - center_x
+                dy_c = ny - center_y
+                dist_c = math.sqrt(dx_c * dx_c + dy_c * dy_c)
+                if dist_c > 1e-6:
+                    node.fx += (-dy_c / dist_c) * twist_str
+                    node.fy += (dx_c / dist_c) * twist_str
 
             # --- Boundary repulsion ---
             if self.bounds is not None and self.boundary_repulsion > 0:
@@ -1166,7 +1227,7 @@ class DifferentialGrowth:
         # Insert in reverse order
         for i, mx, my in reversed(to_split):
             insert_idx = (i + 1) if (i + 1) < len(nodes) else len(nodes)
-            nodes.insert(insert_idx, Node(mx, my))
+            nodes.insert(insert_idx, Node(mx, my, birth_step=self.current_step))
 
         return len(to_split)
 
@@ -1184,6 +1245,7 @@ class DifferentialGrowth:
         return True
 
     def step(self, step_num: int = 0, check_intersections: bool = True) -> None:
+        self.current_step = step_num
         # Optionally check intersections
         do_check = check_intersections and (step_num % 3 == 0)
         self.apply_forces(do_check)
@@ -1293,7 +1355,8 @@ class DifferentialGrowth:
     def export_svg(self, filename: str, variable_stroke: bool = False,
                    stroke_curves: float = 6.0, stroke_straights: float = 0.5,
                    stroke_angle: float = 0.0, stroke_multiplier: float = 1.0,
-                   stroke_color: str = 'red', fill_color: str = 'black') -> None:
+                   stroke_color: str = 'red', fill_color: str = 'black',
+                   stroke_tip: Optional[str] = None) -> None:
         nodes = self.nodes
         n = len(nodes)
         if n == 0:
@@ -1313,7 +1376,26 @@ class DifferentialGrowth:
 
         points = [(node.x, node.y) for node in nodes]
 
-        if not variable_stroke:
+        # Pre-compute per-segment age colors if stroke_tip is set
+        seg_colors = None
+        if stroke_tip is not None:
+            max_step = max(nd.birth_step for nd in nodes)
+            min_step = min(nd.birth_step for nd in nodes)
+            step_range = max(1, max_step - min_step)
+            old_r, old_g, old_b = parse_color(stroke_color)
+            new_r, new_g, new_b = parse_color(stroke_tip)
+            seg_colors = []
+            for i in range(n):
+                age1 = nodes[i].birth_step
+                age2 = nodes[(i + 1) % n].birth_step
+                avg_age = (age1 + age2) / 2.0
+                t = (avg_age - min_step) / step_range  # 0=oldest, 1=youngest
+                r = int(old_r + t * (new_r - old_r))
+                g = int(old_g + t * (new_g - old_g))
+                b = int(old_b + t * (new_b - old_b))
+                seg_colors.append(f"rgb({r},{g},{b})")
+
+        if not variable_stroke and seg_colors is None:
             # Single path with uniform stroke
             path_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
             for i in range(n):
@@ -1332,6 +1414,41 @@ class DifferentialGrowth:
             path.set('stroke', stroke_color)
             path.set('stroke-width', '3')
             path.set('fill', fill_color)
+        elif not variable_stroke and seg_colors is not None:
+            # Age-colored: fill background, then per-segment colored strokes
+            bg_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
+            for i in range(n):
+                p0 = points[(i - 1) % n]
+                p1 = points[i]
+                p2 = points[(i + 1) % n]
+                p3 = points[(i + 2) % n]
+                cp1x = p1[0] + (p2[0] - p0[0]) / 6
+                cp1y = p1[1] + (p2[1] - p0[1]) / 6
+                cp2x = p2[0] - (p3[0] - p1[0]) / 6
+                cp2y = p2[1] - (p3[1] - p1[1]) / 6
+                bg_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
+            bg = ET.SubElement(svg, 'path')
+            bg.set('d', bg_data)
+            bg.set('stroke', 'none')
+            bg.set('fill', fill_color)
+
+            for i in range(n):
+                p0 = points[(i - 1) % n]
+                p1 = points[i]
+                p2 = points[(i + 1) % n]
+                p3 = points[(i + 2) % n]
+                cp1x = p1[0] + (p2[0] - p0[0]) / 6
+                cp1y = p1[1] + (p2[1] - p0[1]) / 6
+                cp2x = p2[0] - (p3[0] - p1[0]) / 6
+                cp2y = p2[1] - (p3[1] - p1[1]) / 6
+                d = (f"M {p1[0]:.2f} {p1[1]:.2f} "
+                     f"C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}")
+                seg = ET.SubElement(svg, 'path')
+                seg.set('d', d)
+                seg.set('stroke', seg_colors[i])
+                seg.set('stroke-width', '3')
+                seg.set('fill', 'none')
+                seg.set('stroke-linecap', 'round')
         else:
             # Per-segment paths with curvature-dependent stroke width
             # Compute curvature at each node (Menger curvature from 3 points)
@@ -1445,7 +1562,7 @@ class DifferentialGrowth:
 
                 seg = ET.SubElement(svg, 'path')
                 seg.set('d', d)
-                seg.set('fill', stroke_color)
+                seg.set('fill', seg_colors[i] if seg_colors else stroke_color)
                 seg.set('stroke', 'none')
 
         ET.ElementTree(svg).write(filename)
@@ -1577,6 +1694,16 @@ Examples:
                         help='Stroke/line color (default: red)')
     parser.add_argument('--fill-color', default='black',
                         help='Fill color for closed curve interior (default: black)')
+    parser.add_argument('--stroke-tip', default=None,
+                        help='Tip color for age gradient (old=stroke-color, young=stroke-tip)')
+    parser.add_argument('--directional-strength', type=float, default=0.0,
+                        help='Uniform directional pull force (like gravity/wind)')
+    parser.add_argument('--directional-angle', type=float, default=270.0,
+                        help='Direction angle in degrees (270=down, 0=right)')
+    parser.add_argument('--twist-strength', type=float, default=0.0,
+                        help='Tangential twist force around image center (creates spirals)')
+    parser.add_argument('--start-offset', type=float, nargs=2, metavar=('X', 'Y'),
+                        help='Offset starting position from center (pixels)')
     parser.add_argument('--output', default='growth.svg')
     parser.add_argument('--log-level', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
@@ -1672,7 +1799,11 @@ Examples:
         boundary_repulsion=args.boundary_repulsion,
         svg_polygon=svg_polygon,
         svg_mode=args.svg_mode,
-        detail_scale=args.detail_scale
+        detail_scale=args.detail_scale,
+        directional_strength=args.directional_strength,
+        directional_angle=args.directional_angle,
+        twist_strength=args.twist_strength,
+        start_offset=tuple(args.start_offset) if args.start_offset else None
     )
 
     logging.info(f"Starting simulation: {args.steps} steps")
@@ -1704,7 +1835,8 @@ Examples:
     sim.export_svg(args.output, variable_stroke=args.variable_stroke,
                    stroke_curves=args.stroke_curves, stroke_straights=args.stroke_straights,
                    stroke_angle=args.stroke_angle, stroke_multiplier=args.stroke_multiplier,
-                   stroke_color=args.stroke_color, fill_color=args.fill_color)
+                   stroke_color=args.stroke_color, fill_color=args.fill_color,
+                   stroke_tip=args.stroke_tip)
 
     # Report statistics
     logging.info(f"Intersection checks: {sim.intersection_checks}")

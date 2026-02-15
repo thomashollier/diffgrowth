@@ -101,6 +101,46 @@ pypy3 diffgrowth.py --steps 800 --growth 0.7 --repulsion 0.8 --noise 0.15 \
 
 ![Calligraphic](examples/calligraphic.svg)
 
+### 9. Curvature Stroke
+
+Variable stroke width driven purely by curvature — thick at tight bends, thin along straight runs, with no directional bias.
+
+```bash
+pypy3 diffgrowth.py --steps 800 --growth 0.7 --repulsion 0.8 --noise 0.15 \
+  --seed 77 --variable-stroke --stroke-curves 8 --stroke-straights 0.5 \
+  --stroke-multiplier 1 \
+  --stroke-color black --fill-color white --output examples/curvature_stroke.svg
+```
+
+![Curvature stroke](examples/curvature_stroke.svg)
+
+### 10. Twisted Growth
+
+Tangential twist force spins the growth into a swirling spiral. Age gradient from brown (old core) to green (young tips).
+
+```bash
+pypy3 diffgrowth.py --steps 1000 --growth 0.7 --repulsion 0.8 --noise 0.15 \
+  --seed 42 --twist-strength 2.5 \
+  --stroke-color brown --stroke-tip forestgreen --fill-color black \
+  --output examples/twist.svg
+```
+
+![Twisted growth](examples/twist.svg)
+
+### 11. Heart Growth
+
+Differential growth filling a heart SVG boundary, starting from between the lobes. Brown core aging to green tips.
+
+```bash
+pypy3 diffgrowth.py --svg-file heart.svg --svg-mode constrain --detail-scale 0.6 \
+  --growth 0.6 --repulsion 0.7 --noise 0.1 --steps 2500 \
+  --seed 42 --start-offset 0 -70 \
+  --stroke-color brown --stroke-tip forestgreen --fill-color black \
+  --output examples/heart_growth.svg
+```
+
+![Heart growth](examples/heart_growth.svg)
+
 ## Parameters
 
 ### Force Parameters (0-1 scale)
@@ -146,7 +186,11 @@ pypy3 diffgrowth.py --steps 800 --growth 0.7 --repulsion 0.8 --noise 0.15 \
 | `--stroke-angle` | 0 | Direction angle for directional thickness (0-360) |
 | `--stroke-multiplier` | 1.0 | Thickness multiplier parallel to stroke-angle |
 | `--stroke-color` | red | Stroke/line color |
+| `--stroke-tip` | none | Tip color for age gradient (old=stroke-color, young=stroke-tip) |
 | `--fill-color` | black | Fill color for curve interior |
+| `--directional-strength` | 0 | Uniform directional pull force (like gravity/wind) |
+| `--directional-angle` | 270 | Direction angle in degrees (270=down, 0=right) |
+| `--twist-strength` | 0 | Tangential twist force around image center (creates spirals) |
 | `--output` | growth.svg | Output filename |
 | `--examples` | off | Print 30 example command lines and exit |
 
