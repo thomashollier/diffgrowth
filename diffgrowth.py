@@ -464,6 +464,60 @@ class SVGPathParser:
         return result
 
     @staticmethod
+    def remove_narrow_sections(points: List[Tuple[float, float]], min_width: float) -> List[Tuple[float, float]]:
+        """Remove narrow protrusions (like antennae) from a polygon.
+
+        Finds places where non-adjacent boundary points are closer than min_width,
+        then shortcuts across, cutting off the narrow section.
+        """
+        n = len(points)
+        if n < 10:
+            return points
+
+        min_gap = max(10, n // 10)  # minimum index distance to count as non-adjacent
+        min_width_sq = min_width * min_width
+
+        while True:
+            n = len(points)
+            best_cut = None
+            best_removed = 0
+
+            for i in range(n):
+                px, py = points[i]
+                for j in range(i + min_gap, n):
+                    # Also check wrap-around adjacency
+                    if (n - j + i) < min_gap:
+                        continue
+                    dx = points[j][0] - px
+                    dy = points[j][1] - py
+                    if dx * dx + dy * dy < min_width_sq:
+                        # Found a bottleneck — cut the shorter side
+                        forward = j - i
+                        backward = n - forward
+                        removed = min(forward, backward)
+                        if removed > best_removed:
+                            best_removed = removed
+                            if forward <= backward:
+                                best_cut = (i, j)
+                            else:
+                                best_cut = (j, i)
+
+            if best_cut is None:
+                break
+
+            # Remove points between best_cut[0] and best_cut[1]
+            a, b = best_cut
+            if a < b:
+                points = points[:a + 1] + points[b:]
+            else:
+                points = points[b:a + 1]
+
+            if len(points) < 10:
+                break
+
+        return points
+
+    @staticmethod
     def fit_to_canvas(
         points: List[Tuple[float, float]],
         width: float, height: float,
@@ -709,13 +763,16 @@ class DifferentialGrowth:
         self.polygon_boundary: Optional[PolygonBoundary] = None
         self.svg_grow_points: Optional[List[Tuple[float, float]]] = None
 
-        if svg_polygon is not None and svg_mode == 'constrain':
+        if svg_polygon is not None and svg_mode in ('constrain', 'fill'):
             self.polygon_boundary = PolygonBoundary(svg_polygon, cell_size=self.repulsion_radius)
             bound_shape = 'svg'
-            # Derive bounds from polygon bounding box
             xs = [p[0] for p in svg_polygon]
             ys = [p[1] for p in svg_polygon]
             bounds = (min(xs), min(ys), max(xs), max(ys))
+            if svg_mode == 'fill':
+                # Start nodes along the boundary edge, grow inward
+                self.svg_grow_points = svg_polygon
+                shape = 'svg'
         elif svg_polygon is not None and svg_mode == 'grow':
             self.svg_grow_points = svg_polygon
             shape = 'svg'
@@ -1713,12 +1770,14 @@ Examples:
     # SVG import arguments
     parser.add_argument('--svg-file', type=str, default=None,
                         help='SVG file to import as starting shape or boundary')
-    parser.add_argument('--svg-mode', choices=['grow', 'constrain'], default='grow',
-                        help='How to use SVG shape: grow from it or constrain within it')
+    parser.add_argument('--svg-mode', choices=['grow', 'constrain', 'fill'], default='grow',
+                        help='How to use SVG: grow (outward), constrain (fill from center), fill (inward from edge)')
     parser.add_argument('--svg-scale', type=float, default=None,
                         help='Scale factor for SVG shape (default: auto-fit to canvas)')
     parser.add_argument('--svg-samples', type=int, default=None,
                         help='Number of points to sample along SVG path (default: auto)')
+    parser.add_argument('--svg-min-width', type=float, default=None,
+                        help='Remove narrow sections thinner than this (in pixels, filters antennae etc.)')
 
     args = parser.parse_args()
 
@@ -1757,10 +1816,16 @@ Examples:
             scale=args.svg_scale, margin=50.0
         )
 
-        # Set sensible default for constrain mode boundary repulsion
-        if args.svg_mode == 'constrain' and args.boundary_repulsion == 0.0:
+        # Filter narrow sections if requested
+        if args.svg_min_width is not None:
+            before = len(svg_polygon)
+            svg_polygon = SVGPathParser.remove_narrow_sections(svg_polygon, args.svg_min_width)
+            logging.info(f"Narrow filter ({args.svg_min_width}px): {before} -> {len(svg_polygon)} points")
+
+        # Set sensible default for constrain/fill mode boundary repulsion
+        if args.svg_mode in ('constrain', 'fill') and args.boundary_repulsion == 0.0:
             args.boundary_repulsion = 0.8
-            logging.info("SVG constrain mode: auto-set boundary-repulsion to 0.8")
+            logging.info(f"SVG {args.svg_mode} mode: auto-set boundary-repulsion to 0.8")
 
     # Handle safe mode: auto-adjust repulsion to guarantee no intersections
     repulsion = args.repulsion

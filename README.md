@@ -129,6 +129,20 @@ pypy3 diffgrowth.py --steps 1000 --growth 0.7 --repulsion 0.8 --noise 0.15 \
 
 ![Twisted growth](examples/twist.svg)
 
+### 11. Butterfly Fill
+
+Growth filling inward from a butterfly silhouette edge. Narrow antennae filtered out with `--svg-min-width`.
+
+```bash
+pypy3 diffgrowth.py --svg-file butterfly.svg --svg-mode fill --svg-samples 200 \
+  --svg-min-width 40 --detail-scale 0.85 --growth 0.7 --repulsion 0.8 --noise 0.15 \
+  --steps 1000 --seed 42 \
+  --stroke-color brown --stroke-tip forestgreen --fill-color black \
+  --output examples/butterfly_growth.svg
+```
+
+![Butterfly fill](examples/butterfly_growth.svg)
+
 ## Parameters
 
 ### Force Parameters (0-1 scale)
