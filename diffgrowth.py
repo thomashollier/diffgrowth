@@ -1182,22 +1182,6 @@ class DifferentialGrowth:
                     node.fx += fx
                     node.fy += fy
 
-            # --- Baseline repulsion for open line ---
-            if open_curve and hasattr(self, 'line_baseline') and growth_dir is not None:
-                baseline = self.line_baseline
-                # Distance from baseline in the growth direction
-                # For upward growth (growth_dir[1] < 0): baseline is max y
-                if growth_dir[1] < -0.1:
-                    dist_to_base = baseline - ny  # positive when above baseline
-                    if dist_to_base < rep_radius and dist_to_base > -rep_radius:
-                        push = rep_factor * 2.0 * max(0.0, 1.0 - dist_to_base / rep_radius)
-                        node.fy -= push  # push upward
-                elif growth_dir[1] > 0.1:
-                    dist_to_base = ny - baseline
-                    if dist_to_base < rep_radius and dist_to_base > -rep_radius:
-                        push = rep_factor * 2.0 * max(0.0, 1.0 - dist_to_base / rep_radius)
-                        node.fy += push  # push downward
-
         # Apply forces and update positions
         damping = self.damping
         max_vel = self.max_velocity
@@ -1214,6 +1198,23 @@ class DifferentialGrowth:
             # Apply forces with damping
             vx = node.vx * damping + node.fx
             vy = node.vy * damping + node.fy
+
+            # Ease into baseline: dampen velocity toward baseline
+            if open_curve and hasattr(self, 'line_baseline') and growth_dir is not None:
+                baseline = self.line_baseline
+                if growth_dir[1] < -0.1:  # growing upward
+                    dist_to_base = baseline - node.y
+                    if dist_to_base < rep_radius and dist_to_base > 0:
+                        # Smoothly reduce downward velocity near baseline
+                        t = dist_to_base / rep_radius  # 0 at baseline, 1 at edge of zone
+                        if vy > 0:  # moving toward baseline
+                            vy *= t * t  # quadratic ease
+                elif growth_dir[1] > 0.1:  # growing downward
+                    dist_to_base = node.y - baseline
+                    if dist_to_base < rep_radius and dist_to_base > 0:
+                        t = dist_to_base / rep_radius
+                        if vy < 0:
+                            vy *= t * t
 
             # Cap velocity
             speed_sq = vx * vx + vy * vy
@@ -1274,6 +1275,12 @@ class DifferentialGrowth:
                 elif self.bound_shape == 'svg' and self.polygon_boundary is not None:
                     node.x, node.y = self.polygon_boundary.clamp_to_interior(node.x, node.y)
 
+            # Hard clamp to baseline (soft repulsion in apply_forces provides gradation)
+            if self.open_curve and self.growth_dir is not None and hasattr(self, 'line_baseline'):
+                if self.growth_dir[1] < -0.1:
+                    node.y = min(node.y, self.line_baseline)
+                elif self.growth_dir[1] > 0.1:
+                    node.y = max(node.y, self.line_baseline)
 
     def _would_cause_intersection(self, node_idx: int, new_x: float, new_y: float) -> bool:
         nodes = self.nodes

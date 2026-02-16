@@ -149,7 +149,7 @@ Open-ended differential line — growth expands upward only from a horizontal ba
 
 ```bash
 pypy3 diffgrowth.py --shape line --initial-nodes 80 --start-offset 0 250 \
-  --steps 500 --growth 0.7 --repulsion 0.7 --noise 0.1 \
+  --steps 700 --growth 0.6 --repulsion 0.8 --noise 0.1 \
   --growth-direction 270 \
   --seed 42 --output examples/differential_line.svg
 ```
