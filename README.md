@@ -156,7 +156,18 @@ pypy3 diffgrowth.py --shape line --initial-nodes 80 --start-offset 0 250 \
 
 ![Differential line](examples/differential_line.svg)
 
-### 13. Open Line
+### 13. Curve Refinement
+
+Reduced curve refinement (0.65) produces more uniform edge splitting — less extra detail at tight bends, giving a smoother, more even texture.
+
+```bash
+pypy3 diffgrowth.py --steps 350 --seed 42 --curve-refinement 0.65 \
+  --output examples/curve_refinement.svg
+```
+
+![Curve refinement](examples/curve_refinement.svg)
+
+### 14. Open Line
 
 An open line growing freely in both directions — same open-ended topology as the differential line, but without a directional constraint.
 

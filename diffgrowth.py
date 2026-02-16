@@ -13,6 +13,8 @@ import argparse
 import logging
 import math
 import random
+import shlex
+import sys
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Optional, Dict, Set
 
@@ -734,7 +736,9 @@ class DifferentialGrowth:
         directional_angle: float = 270.0,
         twist_strength: float = 0.0,
         start_offset: Optional[Tuple[float, float]] = None,
-        growth_direction: Optional[float] = None
+        growth_direction: Optional[float] = None,
+        curve_refinement: float = 1.0,
+        growth_mode: str = 'split'
     ):
         self.width = width
         self.height = height
@@ -757,6 +761,8 @@ class DifferentialGrowth:
         self.growth_factor = growth * self._GROWTH_SCALE
         self.noise_factor = noise * self._NOISE_SCALE * self.base_length
         self.damping = max(0.0, min(1.0, damping))
+        self.curve_refinement = curve_refinement
+        self.growth_mode = growth_mode
 
         if random_seed is not None:
             random.seed(random_seed)
@@ -1381,20 +1387,82 @@ class DifferentialGrowth:
         max_edge = self.max_edge_length
         min_sep = self.min_edge_length * 0.8
         edge_count = n - 1 if self.open_curve else n
+        open_curve = self.open_curve
+        sqrt = math.sqrt
 
-        # Find edges to split
+        # Compute curvature at each node as (1 - cos(turning angle)).
+        # The turning angle is the angle between the incoming and outgoing
+        # edges at a node. When the curve is straight the edges point the
+        # same way, cos ≈ 1, so curvature ≈ 0. At a sharp bend the edges
+        # diverge, cos drops, and curvature approaches 2 (full reversal).
+        curvatures = [0.0] * n
+        for i in range(n):
+            if open_curve and (i == 0 or i == n - 1):
+                continue
+            prev_i = (i - 1) % n
+            next_i = (i + 1) % n
+            px = nodes[i].x - nodes[prev_i].x
+            py = nodes[i].y - nodes[prev_i].y
+            nx = nodes[next_i].x - nodes[i].x
+            ny = nodes[next_i].y - nodes[i].y
+            lp = sqrt(px * px + py * py)
+            ln = sqrt(nx * nx + ny * ny)
+            if lp > 1e-10 and ln > 1e-10:
+                cos_a = (px * nx + py * ny) / (lp * ln)
+                if cos_a > 1.0:
+                    cos_a = 1.0
+                elif cos_a < -1.0:
+                    cos_a = -1.0
+                curvatures[i] = 1.0 - cos_a
+
+        # Split edges that exceed an adaptive max length. The threshold is
+        # max_edge / (1 + curvature), using the sharper of the two endpoints.
+        # Straight sections (curvature ≈ 0) keep the full max_edge threshold.
+        # A 90° bend (curvature ≈ 1) halves it, so the edge splits at half
+        # the normal length, producing finer detail where the curve is tight.
         to_split = []
         for i in range(edge_count):
             next_i = (i + 1) % n
             dx = nodes[next_i].x - nodes[i].x
             dy = nodes[next_i].y - nodes[i].y
-            if dx * dx + dy * dy > max_edge * max_edge:
+            curv = curvatures[i] if curvatures[i] > curvatures[next_i] else curvatures[next_i]
+            effective_max = max_edge / (1.0 + curv * self.curve_refinement)
+            if dx * dx + dy * dy > effective_max * effective_max:
                 mid_x = (nodes[i].x + nodes[next_i].x) * 0.5
                 mid_y = (nodes[i].y + nodes[next_i].y) * 0.5
                 if self._valid_split(mid_x, mid_y, i, min_sep):
                     to_split.append((i, mid_x, mid_y))
 
         # Insert in reverse order
+        for i, mx, my in reversed(to_split):
+            insert_idx = (i + 1) if (i + 1) < len(nodes) else len(nodes)
+            nodes.insert(insert_idx, Node(mx, my, birth_step=self.current_step))
+
+        return len(to_split)
+
+    def split_edges_random(self) -> int:
+        """Randomly insert nodes at edge midpoints.
+
+        Each edge has a probability of being split proportional to the
+        growth parameter. No curvature weighting — selection is uniform
+        random. _valid_split still applies to prevent overcrowding.
+        """
+        nodes = self.nodes
+        n = len(nodes)
+        edge_count = n - 1 if self.open_curve else n
+        min_sep = self.min_edge_length * 0.8
+        prob = self.growth_factor  # already scaled by _GROWTH_SCALE
+
+        to_split = []
+        for i in range(edge_count):
+            if random.random() > prob:
+                continue
+            next_i = (i + 1) % n
+            mid_x = (nodes[i].x + nodes[next_i].x) * 0.5
+            mid_y = (nodes[i].y + nodes[next_i].y) * 0.5
+            if self._valid_split(mid_x, mid_y, i, min_sep):
+                to_split.append((i, mid_x, mid_y))
+
         for i, mx, my in reversed(to_split):
             insert_idx = (i + 1) if (i + 1) < len(nodes) else len(nodes)
             nodes.insert(insert_idx, Node(mx, my, birth_step=self.current_step))
@@ -1419,10 +1487,13 @@ class DifferentialGrowth:
 
     def step(self, step_num: int = 0, check_intersections: bool = True) -> None:
         self.current_step = step_num
-        # Optionally check intersections
-        do_check = check_intersections and (step_num % 3 == 0)
-        self.apply_forces(do_check)
-        self.split_edges()
+        if self.growth_mode == 'random':
+            self.apply_forces(False)
+            self.split_edges_random()
+        else:
+            do_check = check_intersections and (step_num % 3 == 0)
+            self.apply_forces(do_check)
+            self.split_edges()
 
     def check_self_intersections(self) -> List[Tuple[int, int, float, float]]:
         """Check for self-intersections in the final curve.
@@ -1539,7 +1610,8 @@ class DifferentialGrowth:
                    stroke_curves: float = 6.0, stroke_straights: float = 0.5,
                    stroke_angle: float = 0.0, stroke_multiplier: float = 1.0,
                    stroke_color: str = 'red', fill_color: str = 'black',
-                   stroke_tip: Optional[str] = None) -> None:
+                   stroke_tip: Optional[str] = None,
+                   command_line: Optional[str] = None) -> None:
         nodes = self.nodes
         n = len(nodes)
         if n == 0:
@@ -1556,6 +1628,8 @@ class DifferentialGrowth:
         svg.set('height', str(self.height))
         svg.set('viewBox', f"{min_x:.2f} {min_y:.2f} {max_x - min_x:.2f} {max_y - min_y:.2f}")
         svg.set('xmlns', 'http://www.w3.org/2000/svg')
+
+        self._svg_command_line = command_line
 
         points = [(node.x, node.y) for node in nodes]
         open_curve = self.open_curve
@@ -1770,7 +1844,15 @@ class DifferentialGrowth:
                 seg.set('fill', seg_colors[i] if seg_colors else stroke_color)
                 seg.set('stroke', 'none')
 
-        ET.ElementTree(svg).write(filename)
+        xml_bytes = ET.tostring(svg)
+        with open(filename, 'wb') as f:
+            if self._svg_command_line:
+                # Write command line as a comment before the SVG element.
+                # Can't use ET.Comment because '--' is illegal in XML comments;
+                # we replace them with double-dash Unicode (EN DASH) for display.
+                safe = self._svg_command_line.replace('--', '\u2013\u2013')
+                f.write(f'<!-- {safe} -->\n'.encode('utf-8'))
+            f.write(xml_bytes)
         self.logger.info(f"Exported {filename} ({n} nodes)")
 
 
@@ -1879,6 +1961,10 @@ Examples:
                         help='Force pushing nodes away from bounds (0-1)')
     parser.add_argument('--detail-scale', type=float, default=1.0,
                         help='Global scale for pattern detail (0.5=finer, 2.0=coarser)')
+    parser.add_argument('--curve-refinement', type=float, default=1.0,
+                        help='Extra node density in curves (0=uniform, 1=default, 2+=aggressive)')
+    parser.add_argument('--growth-mode', default='split', choices=['split', 'random'],
+                        help='Growth mode: split=threshold-based (default), random=random insertion')
     parser.add_argument('--no-intersection-check', action='store_true',
                         help='Disable intersection checking (faster, requires balanced params)')
     parser.add_argument('--no-post-process', action='store_true',
@@ -2019,40 +2105,44 @@ Examples:
         directional_angle=args.directional_angle,
         twist_strength=args.twist_strength,
         start_offset=tuple(args.start_offset) if args.start_offset else None,
-        growth_direction=args.growth_direction
+        growth_direction=args.growth_direction,
+        curve_refinement=args.curve_refinement,
+        growth_mode=args.growth_mode
     )
 
     logging.info(f"Starting simulation: {args.steps} steps")
 
-    check_intersections = not args.no_intersection_check
+    check_intersections = not args.no_intersection_check and args.growth_mode != 'random'
     for i in range(args.steps):
         sim.step(i, check_intersections=check_intersections)
         if (i + 1) % 50 == 0:
             logging.info(f"Step {i + 1}/{args.steps} - {len(sim.nodes)} nodes")
 
-    # Post-process: resolve self-intersections
-    if not args.no_post_process:
+    # Post-process: resolve self-intersections (skip for random mode)
+    if not args.no_post_process and args.growth_mode != 'random':
         resolved = sim.resolve_intersections()
         if resolved:
             logging.info(f"Post-process resolved {resolved} intersection(s)")
 
-    # Final intersection report
-    intersections = sim.check_self_intersections()
-    if intersections:
-        logging.warning(f"Intersection report: {len(intersections)} self-intersection(s) remain")
-        for i, j, x, y in intersections[:10]:  # Show first 10
-            logging.warning(f"  Edges {i}-{j} intersect at ({x:.1f}, {y:.1f})")
-        if len(intersections) > 10:
-            logging.warning(f"  ... and {len(intersections) - 10} more")
-        logging.warning("To prevent intersections, use --safe-mode")
-    else:
-        logging.info("Intersection report: clean (no self-intersections)")
+    # Final intersection report (skip for random mode)
+    if args.growth_mode != 'random':
+        intersections = sim.check_self_intersections()
+        if intersections:
+            logging.warning(f"Intersection report: {len(intersections)} self-intersection(s) remain")
+            for i, j, x, y in intersections[:10]:  # Show first 10
+                logging.warning(f"  Edges {i}-{j} intersect at ({x:.1f}, {y:.1f})")
+            if len(intersections) > 10:
+                logging.warning(f"  ... and {len(intersections) - 10} more")
+            logging.warning("To prevent intersections, use --safe-mode")
+        else:
+            logging.info("Intersection report: clean (no self-intersections)")
 
     sim.export_svg(args.output, variable_stroke=args.variable_stroke,
                    stroke_curves=args.stroke_curves, stroke_straights=args.stroke_straights,
                    stroke_angle=args.stroke_angle, stroke_multiplier=args.stroke_multiplier,
                    stroke_color=args.stroke_color, fill_color=args.fill_color,
-                   stroke_tip=args.stroke_tip)
+                   stroke_tip=args.stroke_tip,
+                   command_line=shlex.join(sys.argv))
 
     # Report statistics
     logging.info(f"Intersection checks: {sim.intersection_checks}")
