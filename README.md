@@ -143,6 +143,31 @@ pypy3 diffgrowth.py --svg-file butterfly.svg --svg-mode fill --svg-samples 200 \
 
 ![Butterfly fill](examples/butterfly_growth.svg)
 
+### 12. Differential Line
+
+Open-ended differential line — growth expands upward only from a horizontal baseline. Unlike closed curves, the endpoints are free.
+
+```bash
+pypy3 diffgrowth.py --shape line --initial-nodes 80 --start-offset 0 250 \
+  --steps 500 --growth 0.7 --repulsion 0.7 --noise 0.1 \
+  --growth-direction 270 \
+  --seed 42 --output examples/differential_line.svg
+```
+
+![Differential line](examples/differential_line.svg)
+
+### 13. Open Line
+
+An open line growing freely in both directions — same open-ended topology as the differential line, but without a directional constraint.
+
+```bash
+pypy3 diffgrowth.py --shape line --initial-nodes 100 \
+  --steps 600 --growth 0.7 --repulsion 0.8 --noise 0.12 \
+  --seed 42 --output examples/open_line.svg
+```
+
+![Open line](examples/open_line.svg)
+
 ## Parameters
 
 ### Force Parameters (0-1 scale)
@@ -161,7 +186,7 @@ pypy3 diffgrowth.py --svg-file butterfly.svg --svg-mode fill --svg-samples 200 \
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--shape` | circle | Starting shape: `circle`, `rectangle`, `triangle`, `star`, `line` |
+| `--shape` | circle | Starting shape: `circle`, `rectangle`, `triangle`, `star`, `line` (line = open curve) |
 | `--bounds` | none | Bounding region: `MIN_X MIN_Y MAX_X MAX_Y` |
 | `--bound-shape` | rectangle | Shape of bound: `rectangle`, `circle`, `star` |
 | `--boundary-repulsion` | 0 | Force pushing away from bounds (0-1) |
@@ -193,6 +218,7 @@ pypy3 diffgrowth.py --svg-file butterfly.svg --svg-mode fill --svg-samples 200 \
 | `--directional-strength` | 0 | Uniform directional pull force (like gravity/wind) |
 | `--directional-angle` | 270 | Direction angle in degrees (270=down, 0=right) |
 | `--twist-strength` | 0 | Tangential twist force around image center (creates spirals) |
+| `--growth-direction` | none | Restrict growth to one direction (angle in degrees, 270=up) |
 | `--output` | growth.svg | Output filename |
 | `--examples` | off | Print 30 example command lines and exit |
 

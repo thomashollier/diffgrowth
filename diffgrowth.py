@@ -46,9 +46,9 @@ def parse_color(color: str) -> Tuple[int, int, int]:
 
 class Node:
     """Optimized node using __slots__ for faster attribute access."""
-    __slots__ = ('x', 'y', 'vx', 'vy', 'fx', 'fy', 'birth_step')
+    __slots__ = ('x', 'y', 'vx', 'vy', 'fx', 'fy', 'birth_step', 'fixed')
 
-    def __init__(self, x: float, y: float, birth_step: int = 0):
+    def __init__(self, x: float, y: float, birth_step: int = 0, fixed: bool = False):
         self.x = x
         self.y = y
         self.vx = 0.0
@@ -56,6 +56,7 @@ class Node:
         self.fx = 0.0
         self.fy = 0.0
         self.birth_step = birth_step
+        self.fixed = fixed
 
 
 class SpatialHash:
@@ -732,7 +733,8 @@ class DifferentialGrowth:
         directional_strength: float = 0.0,
         directional_angle: float = 270.0,
         twist_strength: float = 0.0,
-        start_offset: Optional[Tuple[float, float]] = None
+        start_offset: Optional[Tuple[float, float]] = None,
+        growth_direction: Optional[float] = None
     ):
         self.width = width
         self.height = height
@@ -796,6 +798,16 @@ class DifferentialGrowth:
         self.dir_angle_rad = math.radians(directional_angle)
         self.twist_strength = twist_strength * self._GROWTH_SCALE
 
+        # Growth direction filter (only grow in one direction)
+        if growth_direction is not None:
+            rad = math.radians(growth_direction)
+            self.growth_dir = (math.cos(rad), math.sin(rad))
+        else:
+            self.growth_dir = None
+
+        # Open curve mode (line shape = differential line, endpoints don't connect)
+        self.open_curve = (shape == 'line')
+
         # Statistics tracking
         self.intersections_blocked = 0
         self.intersection_checks = 0
@@ -848,6 +860,7 @@ class DifferentialGrowth:
         elif shape == 'line':
             # Horizontal line - will grow outward
             length = size * 3
+            self.line_baseline = cy  # store for one-sided clamping
             for i in range(count):
                 t = i / (count - 1) if count > 1 else 0.5
                 x = cx - length/2 + t * length + random.uniform(-2, 2)
@@ -900,15 +913,17 @@ class DifferentialGrowth:
         sh.clear()
         nodes = self.nodes
         n = len(nodes)
+        edge_count = n - 1 if self.open_curve else n
 
         for i in range(n):
             node = nodes[i]
             x, y = node.x, node.y
             sh.insert(i, x, y)
 
-            next_i = (i + 1) % n
-            nn = nodes[next_i]
-            sh.insert_edge(i, x, y, nn.x, nn.y)
+            if i < edge_count:
+                next_i = (i + 1) % n
+                nn = nodes[next_i]
+                sh.insert_edge(i, x, y, nn.x, nn.y)
 
     def apply_forces(self, check_intersections: bool = True) -> None:
         nodes = self.nodes
@@ -931,6 +946,9 @@ class DifferentialGrowth:
         center_x = self.width * 0.5
         center_y = self.height * 0.5
 
+        # Growth direction filter
+        growth_dir = self.growth_dir
+
         # Cache frequently used values
         min_edge = self.min_edge_length
         base_len = self.base_length
@@ -943,19 +961,21 @@ class DifferentialGrowth:
         noise_factor = self.noise_factor
         sh = self.spatial_hash
 
+        open_curve = self.open_curve
+        last = n - 1
+
         for i in range(n):
             node = nodes[i]
             nx, ny = node.x, node.y
 
-            prev_i = (i - 1) % n
-            next_i = (i + 1) % n
-            prev_node = nodes[prev_i]
-            next_node = nodes[next_i]
+            is_start = open_curve and i == 0
+            is_end = open_curve and i == last
 
             # --- Attraction to neighbors ---
-            for neighbor in (prev_node, next_node):
-                dx = neighbor.x - nx
-                dy = neighbor.y - ny
+            if not is_start:
+                prev_node = nodes[i - 1]
+                dx = prev_node.x - nx
+                dy = prev_node.y - ny
                 dist_sq = dx * dx + dy * dy
                 if dist_sq > 1e-12:
                     dist = math.sqrt(dist_sq)
@@ -964,16 +984,52 @@ class DifferentialGrowth:
                         force = excess * attr_factor / dist
                         node.fx += dx * force
                         node.fy += dy * force
+            else:
+                prev_node = None
+
+            if not is_end:
+                next_node = nodes[(i + 1) % n]
+                dx = next_node.x - nx
+                dy = next_node.y - ny
+                dist_sq = dx * dx + dy * dy
+                if dist_sq > 1e-12:
+                    dist = math.sqrt(dist_sq)
+                    if dist > min_edge:
+                        excess = (dist - min_edge) / base_len
+                        force = excess * attr_factor / dist
+                        node.fx += dx * force
+                        node.fy += dy * force
+            else:
+                next_node = None
 
             # --- Growth along normal ---
-            tx = next_node.x - prev_node.x
-            ty = next_node.y - prev_node.y
+            if prev_node is not None and next_node is not None:
+                tx = next_node.x - prev_node.x
+                ty = next_node.y - prev_node.y
+            elif next_node is not None:
+                tx = next_node.x - nx
+                ty = next_node.y - ny
+            elif prev_node is not None:
+                tx = nx - prev_node.x
+                ty = ny - prev_node.y
+            else:
+                tx, ty = 0.0, 0.0
+
             tlen_sq = tx * tx + ty * ty
             if tlen_sq > 1e-12:
                 tlen = math.sqrt(tlen_sq)
                 # Normal is 90° CCW rotation of tangent
-                node.fx += (-ty / tlen) * growth_factor
-                node.fy += (tx / tlen) * growth_factor
+                norm_x = -ty / tlen
+                norm_y = tx / tlen
+                if growth_dir is not None:
+                    # Only apply growth when normal aligns with desired direction
+                    dot = norm_x * growth_dir[0] + norm_y * growth_dir[1]
+                    if dot > 0:
+                        node.fx += norm_x * growth_factor * dot
+                        node.fy += norm_y * growth_factor * dot
+                else:
+                    node.fx += norm_x * growth_factor
+                    node.fy += norm_y * growth_factor
 
             # --- Node repulsion (spatial hash) ---
             nearby = sh.query_radius(nx, ny, rep_radius)
@@ -993,13 +1049,21 @@ class DifferentialGrowth:
                     node.fy += dy * force
 
             # --- Edge repulsion (spatial hash) ---
-            skip = {(i - 2) % n, (i - 1) % n, i, (i + 1) % n, (i + 2) % n}
+            if open_curve:
+                skip = set()
+                for k in range(i - 2, i + 3):
+                    if 0 <= k < n:
+                        skip.add(k)
+            else:
+                skip = {(i - 2) % n, (i - 1) % n, i, (i + 1) % n, (i + 2) % n}
             nearby_edges = sh.query_edges_near(nx, ny, rep_radius)
 
             for ei in nearby_edges:
                 if ei in skip:
                     continue
-                eni = (ei + 1) % n
+                eni = ei + 1 if open_curve else (ei + 1) % n
+                if open_curve and eni >= n:
+                    continue
                 if eni in skip:
                     continue
 
@@ -1027,16 +1091,17 @@ class DifferentialGrowth:
                     node.fy += (ny - cy) * force
 
             # --- Alignment ---
-            mid_x = (prev_node.x + next_node.x) * 0.5
-            mid_y = (prev_node.y + next_node.y) * 0.5
-            dx, dy = mid_x - nx, mid_y - ny
-            dist_sq = dx * dx + dy * dy
-            if dist_sq > 1e-12:
-                dist = math.sqrt(dist_sq)
-                norm_dist = dist / base_len
-                force = norm_dist * align_factor / dist
-                node.fx += dx * force
-                node.fy += dy * force
+            if prev_node is not None and next_node is not None:
+                mid_x = (prev_node.x + next_node.x) * 0.5
+                mid_y = (prev_node.y + next_node.y) * 0.5
+                dx, dy = mid_x - nx, mid_y - ny
+                dist_sq = dx * dx + dy * dy
+                if dist_sq > 1e-12:
+                    dist = math.sqrt(dist_sq)
+                    norm_dist = dist / base_len
+                    force = norm_dist * align_factor / dist
+                    node.fx += dx * force
+                    node.fy += dy * force
 
             # --- Noise ---
             node.fx += random.uniform(-1, 1) * noise_factor
@@ -1117,6 +1182,22 @@ class DifferentialGrowth:
                     node.fx += fx
                     node.fy += fy
 
+            # --- Baseline repulsion for open line ---
+            if open_curve and hasattr(self, 'line_baseline') and growth_dir is not None:
+                baseline = self.line_baseline
+                # Distance from baseline in the growth direction
+                # For upward growth (growth_dir[1] < 0): baseline is max y
+                if growth_dir[1] < -0.1:
+                    dist_to_base = baseline - ny  # positive when above baseline
+                    if dist_to_base < rep_radius and dist_to_base > -rep_radius:
+                        push = rep_factor * 2.0 * max(0.0, 1.0 - dist_to_base / rep_radius)
+                        node.fy -= push  # push upward
+                elif growth_dir[1] > 0.1:
+                    dist_to_base = ny - baseline
+                    if dist_to_base < rep_radius and dist_to_base > -rep_radius:
+                        push = rep_factor * 2.0 * max(0.0, 1.0 - dist_to_base / rep_radius)
+                        node.fy += push  # push downward
+
         # Apply forces and update positions
         damping = self.damping
         max_vel = self.max_velocity
@@ -1124,6 +1205,11 @@ class DifferentialGrowth:
 
         for i in range(n):
             node = nodes[i]
+
+            if node.fixed:
+                node.vx = 0.0
+                node.vy = 0.0
+                continue
 
             # Apply forces with damping
             vx = node.vx * damping + node.fx
@@ -1188,51 +1274,70 @@ class DifferentialGrowth:
                 elif self.bound_shape == 'svg' and self.polygon_boundary is not None:
                     node.x, node.y = self.polygon_boundary.clamp_to_interior(node.x, node.y)
 
+
     def _would_cause_intersection(self, node_idx: int, new_x: float, new_y: float) -> bool:
         nodes = self.nodes
         n = len(nodes)
         if n < 4:
             return False
 
-        pred_idx = (node_idx - 1) % n
-        succ_idx = (node_idx + 1) % n
-        pred, succ = nodes[pred_idx], nodes[succ_idx]
+        open_curve = self.open_curve
+        has_pred = not (open_curve and node_idx == 0)
+        has_succ = not (open_curve and node_idx == n - 1)
+
+        pred_idx = (node_idx - 1) % n if has_pred else -1
+        succ_idx = (node_idx + 1) % n if has_succ else -1
+        pred = nodes[pred_idx] if has_pred else None
+        succ = nodes[succ_idx] if has_succ else None
 
         min_sep = self.min_separation
-        skip = {pred_idx, node_idx, succ_idx}
+        skip = {node_idx}
+        if has_pred:
+            skip.add(pred_idx)
+        if has_succ:
+            skip.add(succ_idx)
 
         # Query nearby edges
         sh = self.spatial_hash
         rep_r = self.repulsion_radius
+        edge_count = n - 1 if open_curve else n
         nearby: Set[int] = set()
         nearby.update(sh.query_edges_near(new_x, new_y, rep_r))
-        nearby.update(sh.query_edges_near(pred.x, pred.y, rep_r))
-        nearby.update(sh.query_edges_near(succ.x, succ.y, rep_r))
+        if pred is not None:
+            nearby.update(sh.query_edges_near(pred.x, pred.y, rep_r))
+        if succ is not None:
+            nearby.update(sh.query_edges_near(succ.x, succ.y, rep_r))
 
         for i in nearby:
-            next_i = (i + 1) % n
+            if i >= edge_count:
+                continue
+            next_i = i + 1 if open_curve else (i + 1) % n
             if i in skip or next_i in skip:
                 continue
 
             p1, p2 = nodes[i], nodes[next_i]
 
             # Check intersection with line1 (pred -> new)
-            if self._segments_intersect(pred.x, pred.y, new_x, new_y,
-                                        p1.x, p1.y, p2.x, p2.y):
-                return True
+            if pred is not None:
+                if self._segments_intersect(pred.x, pred.y, new_x, new_y,
+                                            p1.x, p1.y, p2.x, p2.y):
+                    return True
 
             # Check intersection with line2 (new -> succ)
-            if self._segments_intersect(new_x, new_y, succ.x, succ.y,
-                                        p1.x, p1.y, p2.x, p2.y):
-                return True
+            if succ is not None:
+                if self._segments_intersect(new_x, new_y, succ.x, succ.y,
+                                            p1.x, p1.y, p2.x, p2.y):
+                    return True
 
             # Check minimum separation
-            if self._segment_distance(pred.x, pred.y, new_x, new_y,
-                                      p1.x, p1.y, p2.x, p2.y) < min_sep:
-                return True
-            if self._segment_distance(new_x, new_y, succ.x, succ.y,
-                                      p1.x, p1.y, p2.x, p2.y) < min_sep:
-                return True
+            if pred is not None:
+                if self._segment_distance(pred.x, pred.y, new_x, new_y,
+                                          p1.x, p1.y, p2.x, p2.y) < min_sep:
+                    return True
+            if succ is not None:
+                if self._segment_distance(new_x, new_y, succ.x, succ.y,
+                                          p1.x, p1.y, p2.x, p2.y) < min_sep:
+                    return True
 
         return False
 
@@ -1268,10 +1373,11 @@ class DifferentialGrowth:
         n = len(nodes)
         max_edge = self.max_edge_length
         min_sep = self.min_edge_length * 0.8
+        edge_count = n - 1 if self.open_curve else n
 
         # Find edges to split
         to_split = []
-        for i in range(n):
+        for i in range(edge_count):
             next_i = (i + 1) % n
             dx = nodes[next_i].x - nodes[i].x
             dy = nodes[next_i].y - nodes[i].y
@@ -1291,8 +1397,11 @@ class DifferentialGrowth:
     def _valid_split(self, mx, my, skip_edge, min_sep) -> bool:
         nodes = self.nodes
         n = len(nodes)
-        for i in range(n):
-            if abs(i - skip_edge) <= 1 or abs(i - skip_edge) >= n - 1:
+        edge_count = n - 1 if self.open_curve else n
+        for i in range(edge_count):
+            if abs(i - skip_edge) <= 1:
+                continue
+            if not self.open_curve and abs(i - skip_edge) >= n - 1:
                 continue
             next_i = (i + 1) % n
             dist = self._point_segment_dist(mx, my,
@@ -1326,7 +1435,8 @@ class DifferentialGrowth:
         intersections = []
         checked = set()
 
-        for i in range(n):
+        edge_count = n - 1 if self.open_curve else n
+        for i in range(edge_count):
             next_i = (i + 1) % n
             p1, p2 = nodes[i], nodes[next_i]
 
@@ -1339,8 +1449,12 @@ class DifferentialGrowth:
             nearby = sh.query_edges_near(mid_x, mid_y, query_radius)
 
             for j in nearby:
+                if j >= edge_count:
+                    continue
                 # Skip adjacent edges and already-checked pairs
-                if abs(i - j) <= 1 or abs(i - j) >= n - 1:
+                if abs(i - j) <= 1:
+                    continue
+                if not self.open_curve and abs(i - j) >= n - 1:
                     continue
                 pair = (min(i, j), max(i, j))
                 if pair in checked:
@@ -1385,17 +1499,22 @@ class DifferentialGrowth:
             n = len(self.nodes)
             i, j = min(edge_i, edge_j), max(edge_i, edge_j)
 
-            # Reverse the shorter of the two arcs between the crossing edges
-            forward_len = j - i  # nodes in segment [i+1 .. j]
-            if forward_len <= n // 2:
+            # Reverse the segment between the crossing edges
+            if self.open_curve:
+                # Open curve: always reverse the segment between i+1 and j
                 self.nodes[i + 1:j + 1] = self.nodes[i + 1:j + 1][::-1]
             else:
-                # Reverse the wrap-around segment [j+1 .. n-1, 0 .. i]
-                backward_len = n - forward_len
-                indices = [(j + 1 + k) % n for k in range(backward_len)]
-                for k in range(backward_len // 2):
-                    a, b = indices[k], indices[backward_len - 1 - k]
-                    self.nodes[a], self.nodes[b] = self.nodes[b], self.nodes[a]
+                # Closed curve: reverse the shorter of the two arcs
+                forward_len = j - i  # nodes in segment [i+1 .. j]
+                if forward_len <= n // 2:
+                    self.nodes[i + 1:j + 1] = self.nodes[i + 1:j + 1][::-1]
+                else:
+                    # Reverse the wrap-around segment [j+1 .. n-1, 0 .. i]
+                    backward_len = n - forward_len
+                    indices = [(j + 1 + k) % n for k in range(backward_len)]
+                    for k in range(backward_len // 2):
+                        a, b = indices[k], indices[backward_len - 1 - k]
+                        self.nodes[a], self.nodes[b] = self.nodes[b], self.nodes[a]
 
             total_resolved += 1
 
@@ -1432,6 +1551,22 @@ class DifferentialGrowth:
         svg.set('xmlns', 'http://www.w3.org/2000/svg')
 
         points = [(node.x, node.y) for node in nodes]
+        open_curve = self.open_curve
+        seg_count = n - 1 if open_curve else n
+
+        # Helper: get point by index, with mirror-clamping for open curve endpoints
+        def pt(i):
+            if open_curve:
+                if i < 0:
+                    # Mirror: reflect point[1] through point[0]
+                    return (2 * points[0][0] - points[1][0],
+                            2 * points[0][1] - points[1][1])
+                if i >= n:
+                    # Mirror: reflect point[n-2] through point[n-1]
+                    return (2 * points[-1][0] - points[-2][0],
+                            2 * points[-1][1] - points[-2][1])
+                return points[i]
+            return points[i % n]
 
         # Pre-compute per-segment age colors if stroke_tip is set
         seg_colors = None
@@ -1442,7 +1577,7 @@ class DifferentialGrowth:
             old_r, old_g, old_b = parse_color(stroke_color)
             new_r, new_g, new_b = parse_color(stroke_tip)
             seg_colors = []
-            for i in range(n):
+            for i in range(seg_count):
                 age1 = nodes[i].birth_step
                 age2 = nodes[(i + 1) % n].birth_step
                 avg_age = (age1 + age2) / 2.0
@@ -1452,14 +1587,16 @@ class DifferentialGrowth:
                 b = int(old_b + t * (new_b - old_b))
                 seg_colors.append(f"rgb({r},{g},{b})")
 
+        curve_fill = 'none' if open_curve else fill_color
+
         if not variable_stroke and seg_colors is None:
             # Single path with uniform stroke
             path_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
-            for i in range(n):
-                p0 = points[(i - 1) % n]
+            for i in range(seg_count):
+                p0 = pt(i - 1)
                 p1 = points[i]
-                p2 = points[(i + 1) % n]
-                p3 = points[(i + 2) % n]
+                p2 = points[i + 1] if open_curve else points[(i + 1) % n]
+                p3 = pt(i + 2)
                 cp1x = p1[0] + (p2[0] - p0[0]) / 6
                 cp1y = p1[1] + (p2[1] - p0[1]) / 6
                 cp2x = p2[0] - (p3[0] - p1[0]) / 6
@@ -1470,30 +1607,31 @@ class DifferentialGrowth:
             path.set('d', path_data)
             path.set('stroke', stroke_color)
             path.set('stroke-width', '3')
-            path.set('fill', fill_color)
+            path.set('fill', curve_fill)
         elif not variable_stroke and seg_colors is not None:
             # Age-colored: fill background, then per-segment colored strokes
-            bg_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
-            for i in range(n):
-                p0 = points[(i - 1) % n]
-                p1 = points[i]
-                p2 = points[(i + 1) % n]
-                p3 = points[(i + 2) % n]
-                cp1x = p1[0] + (p2[0] - p0[0]) / 6
-                cp1y = p1[1] + (p2[1] - p0[1]) / 6
-                cp2x = p2[0] - (p3[0] - p1[0]) / 6
-                cp2y = p2[1] - (p3[1] - p1[1]) / 6
-                bg_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
-            bg = ET.SubElement(svg, 'path')
-            bg.set('d', bg_data)
-            bg.set('stroke', 'none')
-            bg.set('fill', fill_color)
+            if not open_curve:
+                bg_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
+                for i in range(seg_count):
+                    p0 = pt(i - 1)
+                    p1 = points[i]
+                    p2 = points[(i + 1) % n]
+                    p3 = pt(i + 2)
+                    cp1x = p1[0] + (p2[0] - p0[0]) / 6
+                    cp1y = p1[1] + (p2[1] - p0[1]) / 6
+                    cp2x = p2[0] - (p3[0] - p1[0]) / 6
+                    cp2y = p2[1] - (p3[1] - p1[1]) / 6
+                    bg_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
+                bg = ET.SubElement(svg, 'path')
+                bg.set('d', bg_data)
+                bg.set('stroke', 'none')
+                bg.set('fill', fill_color)
 
-            for i in range(n):
-                p0 = points[(i - 1) % n]
+            for i in range(seg_count):
+                p0 = pt(i - 1)
                 p1 = points[i]
-                p2 = points[(i + 1) % n]
-                p3 = points[(i + 2) % n]
+                p2 = points[i + 1] if open_curve else points[(i + 1) % n]
+                p3 = pt(i + 2)
                 cp1x = p1[0] + (p2[0] - p0[0]) / 6
                 cp1y = p1[1] + (p2[1] - p0[1]) / 6
                 cp2x = p2[0] - (p3[0] - p1[0]) / 6
@@ -1511,9 +1649,9 @@ class DifferentialGrowth:
             # Compute curvature at each node (Menger curvature from 3 points)
             curvatures = []
             for i in range(n):
-                px, py = points[(i - 1) % n]
+                px, py = pt(i - 1)
                 cx, cy = points[i]
-                nx, ny = points[(i + 1) % n]
+                nx, ny = pt(i + 1)
                 # Triangle side lengths
                 a = math.sqrt((cx - px)**2 + (cy - py)**2)
                 b = math.sqrt((nx - cx)**2 + (ny - cy)**2)
@@ -1537,8 +1675,10 @@ class DifferentialGrowth:
             normals = []
             widths = []
             for i in range(n):
-                tx = points[(i + 1) % n][0] - points[(i - 1) % n][0]
-                ty = points[(i + 1) % n][1] - points[(i - 1) % n][1]
+                pi_prev = pt(i - 1)
+                pi_next = pt(i + 1)
+                tx = pi_next[0] - pi_prev[0]
+                ty = pi_next[1] - pi_prev[1]
                 tlen = math.sqrt(tx * tx + ty * ty)
                 if tlen > 1e-10:
                     normals.append((-ty / tlen, tx / tlen))
@@ -1554,30 +1694,31 @@ class DifferentialGrowth:
                 w = stroke_straights + t * (stroke_curves - stroke_straights)
                 widths.append(w * dir_mult)
 
-            # Background fill
-            bg_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
-            for i in range(n):
-                p1 = points[i]
-                p2 = points[(i + 1) % n]
-                p0 = points[(i - 1) % n]
-                p3 = points[(i + 2) % n]
-                cp1x = p1[0] + (p2[0] - p0[0]) / 6
-                cp1y = p1[1] + (p2[1] - p0[1]) / 6
-                cp2x = p2[0] - (p3[0] - p1[0]) / 6
-                cp2y = p2[1] - (p3[1] - p1[1]) / 6
-                bg_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
-            bg = ET.SubElement(svg, 'path')
-            bg.set('d', bg_data)
-            bg.set('stroke', 'none')
-            bg.set('fill', fill_color)
+            # Background fill (closed curves only)
+            if not open_curve:
+                bg_data = f"M {points[0][0]:.2f} {points[0][1]:.2f}"
+                for i in range(seg_count):
+                    p1 = points[i]
+                    p2 = points[(i + 1) % n]
+                    p0 = pt(i - 1)
+                    p3 = pt(i + 2)
+                    cp1x = p1[0] + (p2[0] - p0[0]) / 6
+                    cp1y = p1[1] + (p2[1] - p0[1]) / 6
+                    cp2x = p2[0] - (p3[0] - p1[0]) / 6
+                    cp2y = p2[1] - (p3[1] - p1[1]) / 6
+                    bg_data += f" C {cp1x:.2f} {cp1y:.2f}, {cp2x:.2f} {cp2y:.2f}, {p2[0]:.2f} {p2[1]:.2f}"
+                bg = ET.SubElement(svg, 'path')
+                bg.set('d', bg_data)
+                bg.set('stroke', 'none')
+                bg.set('fill', fill_color)
 
             # Draw each segment as a filled tapered ribbon
-            for i in range(n):
+            for i in range(seg_count):
                 i1 = (i + 1) % n
-                p0 = points[(i - 1) % n]
+                p0 = pt(i - 1)
                 p1 = points[i]
                 p2 = points[i1]
-                p3 = points[(i + 2) % n]
+                p3 = pt(i + 2)
 
                 # Catmull-Rom to Bezier control points
                 cp1x = p1[0] + (p2[0] - p0[0]) / 6
@@ -1759,6 +1900,8 @@ Examples:
                         help='Direction angle in degrees (270=down, 0=right)')
     parser.add_argument('--twist-strength', type=float, default=0.0,
                         help='Tangential twist force around image center (creates spirals)')
+    parser.add_argument('--growth-direction', type=float, default=None,
+                        help='Restrict growth to one direction (angle in degrees, 270=up, 90=down)')
     parser.add_argument('--start-offset', type=float, nargs=2, metavar=('X', 'Y'),
                         help='Offset starting position from center (pixels)')
     parser.add_argument('--output', default='growth.svg')
@@ -1868,7 +2011,8 @@ Examples:
         directional_strength=args.directional_strength,
         directional_angle=args.directional_angle,
         twist_strength=args.twist_strength,
-        start_offset=tuple(args.start_offset) if args.start_offset else None
+        start_offset=tuple(args.start_offset) if args.start_offset else None,
+        growth_direction=args.growth_direction
     )
 
     logging.info(f"Starting simulation: {args.steps} steps")
